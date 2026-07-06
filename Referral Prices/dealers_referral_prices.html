@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Network Package Pricing</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="styles (1).css">
+    <style>
+        .hidden-col { display: none !important; }
+        .dynamic-table-container { overflow-x: auto; margin-bottom: 30px; }
+        .pricing-table th, .pricing-table td { padding: 8px 6px; font-size: 0.8rem; }
+        .set-price-input { width: 80px; padding: 4px; }
+    </style>
+</head>
+<body>
+    <!-- Sidebar Overlay -->
+    <div class="overlay" id="overlay"></div>
+    
+    <!-- Sidebar Navigation -->
+    <div class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+            <button class="close-btn" id="closeBtn"><i class="fas fa-times"></i></button>
+            <div class="sidebar-title">J.D Youngster Enterprise</div>
+            <div class="brand-logo"><img src="WhatsApp Image 2026-01-31 at 4.07.11 PM.jpeg" alt="Logo"></div>
+        </div>
+        <ul class="menu">
+            <a href="../Orders/new_orders.html" class="menu-item"><i class="fas fa-shopping-cart"></i><span class="menu-text">Orders</span></a>
+            <a href="../Transactions/transactions2.html" class="menu-item"><i class="fas fa-exchange-alt"></i><span class="menu-text">Transactions</span></a>
+            <a href="../Referral Prices/dealers_referral_prices.html" class="menu-item active"><i class="fas fa-tags"></i><span class="menu-text">Referral Prices</span></a>
+            <a href="../Referral links/dealers_referral_program.html" class="menu-item"><i class="fas fa-tags"></i><span class="menu-text">Referral Links</span></a>
+            <a href="../Withdrawals/withdrawal_page.html" class="menu-item"><i class="fas fa-money-bill-wave"></i><span class="menu-text">Withdraw Earnings</span></a>
+            <li class="menu-item logout" id="logoutBtn"><i class="fas fa-sign-out-alt"></i><span class="menu-text">Log Out</span></li>
+        </ul>
+    </div>
+    
+    <div class="container">
+        <header>
+            <div class="header-controls">
+                <button class="menu-btn" id="menuBtn"><i class="fas fa-bars"></i></button>
+                <div class="header-title"><h1>Network Package Pricing</h1><p class="subtitle">Set prices for different client types</p></div>
+                <div class="theme-toggle" id="themeToggle"><i class="fas fa-moon theme-icon" id="themeIcon"></i></div>
+            </div>
+        </header>
+        
+        <!-- Dynamic tables will be inserted here -->
+        <div id="dynamicTablesContainer"></div>
+        
+        <div class="form-container">
+            <div class="form-header"><h2><i class="fas fa-plus-circle"></i> Store Details</h2></div>
+            <div class="form-body">
+                <form id="seller-info-form">
+                    <div class="form-group"><label class="required">Store Logo</label>
+                        <div class="logo-upload-container">
+                            <div class="logo-preview" id="logo-preview"><img src="default-logo.png" id="logo-preview-img"></div>
+                            <div class="logo-upload-controls">
+                                <input type="file" id="seller-logo" accept="image/*" style="display: none;">
+                                <button type="button" class="btn-upload" id="upload-logo-btn"><i class="fas fa-cloud-upload-alt"></i> Choose Logo</button>
+                                <button type="button" class="btn-remove" id="remove-logo-btn" style="display: none;"><i class="fas fa-trash"></i> Remove</button>
+                                <p class="upload-hint">Recommended: Square image, at least 200x200px</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="form-group"><label class="required">Store Name</label><input type="text" id="business-name" placeholder="Enter your store name" required></div>
+                    <div class="form-group"><label>Store Description</label><textarea id="seller-description" rows="3">Your trusted partner for data services</textarea></div>
+                    <div class="form-group"><label class="required">WhatsApp Group Link</label>
+                        <div class="whatsapp-field"><div class="whatsapp-prefix-container"><span class="whatsapp-prefix"><i class="fab fa-whatsapp"></i></span></div>
+                        <div class="whatsapp-input-container"><input type="url" id="whatsapp-group-link" class="whatsapp-input" placeholder="https://chat.whatsapp.com/..." required></div></div>
+                        <p class="whatsapp-hint">This link will be used for the "Join Group" button</p>
+                    </div>
+                    <div class="form-group"><label class="required">WhatsApp Number</label>
+                        <div class="whatsapp-field"><div class="whatsapp-prefix-container"><span class="whatsapp-prefix">+233</span></div>
+                        <div class="whatsapp-input-container"><input type="text" id="whatsapp-number" class="whatsapp-input" placeholder="55 123 4567" required></div></div>
+                        <p class="whatsapp-hint">This number will be used for the "Chat Admin" button</p>
+                    </div>
+                </form>
+            </div>
+        </div>
+        
+        <div class="save-section"><button class="save-button" id="savePrices">Save All Changes</button></div>
+        <div class="footer-note">Note: Only prices that has been set will be displayed on your customers dashboard</div>
+    </div>
+    
+    <div class="notification" id="notification">Changes saved successfully!</div>
+    <script src="script (1).js"></script>
+</body>
+</html>

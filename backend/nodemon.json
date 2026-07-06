@@ -1,0 +1,21 @@
+{
+  "watch": [
+    "*.js",
+    "routes/",
+    "models/",
+    "services/",
+    "middleware/",
+    "config/"
+  ],
+  "ext": "js,json",
+  "ignore": [
+    "whatsapp-edge-session/",
+    "whatsapp-session/",
+    "whatsapp-pending-reactions.json",
+    ".iget-browser-session/",
+    ".iget-screenshots/",
+    "node_modules/",
+    "*.log",
+    "logs/"
+  ]
+}

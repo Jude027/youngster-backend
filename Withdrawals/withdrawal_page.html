@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Withdraw Earnings</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="styles.css">        
+
+</head>
+<body>
+    <!-- Sidebar Overlay -->
+    <div class="overlay" id="overlay"></div>
+    
+    <!-- Sidebar Navigation -->
+    <div class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+            <button class="close-btn" id="closeBtn">
+                <i class="fas fa-times"></i>
+            </button>
+            <div class="sidebar-title">J.D Youngster Enterprise</div>
+            <div class="brand-logo">
+                <img src="WhatsApp Image 2026-01-31 at 4.07.11 PM.jpeg" alt="J.D You Logo">
+            </div>
+        </div>
+        <ul class="menu">
+            <!-- Orders -->
+            <a href="../Orders/new_orders.html" class="menu-item">
+                <i class="fas fa-shopping-cart"></i>
+                <span class="menu-text">Orders</span>
+            </a>
+            
+            <!-- Transactions -->
+            <a href="../Transactions/transactions2.html" class="menu-item">
+                <i class="fas fa-exchange-alt"></i>
+                <span class="menu-text">Transactions</span>
+            </a>
+            
+            <!-- Referral Prices -->
+            <a href="../Referral%20Prices/dealers_referral_prices.html" class="menu-item">
+                <i class="fas fa-tags"></i>
+                <span class="menu-text">Referral Prices</span>
+            </a>
+
+            <!-- Referral Prices -->
+            <a href="../Referral links/dealers_referral_program.html" class="menu-item">
+                <i class="fas fa-tags"></i>
+                <span class="menu-text">Referral Links</span>
+            </a>
+            
+            <!-- Withdraw Earnings -->
+            <a href="../Withdrawals/withdrawal_page.html" class="menu-item active">
+                <i class="fas fa-money-bill-wave"></i>
+                <span class="menu-text">Withdraw Earnings</span>
+            </a>
+            
+            <!-- Log Out -->
+            <li class="menu-item logout" id="logoutBtn">
+                <i class="fas fa-sign-out-alt"></i>
+                <span class="menu-text">Log Out</span>
+            </li>
+        </ul>
+    </div>
+
+    <div class="withdrawal-container">
+        <header class="page-header">
+            <div class="header-content">
+                <button class="menu-btn" id="menuBtn">
+                    <i class="fas fa-bars"></i>
+                </button>
+                <div class="header-title">
+                    <i class="fas fa-wallet"></i>
+                    Withdraw Earnings
+                </div>
+            </div>
+            
+            <div class="balance-card">
+                <span class="balance-label">Commission Earned</span>
+                <div class="balance-amount">
+                    GHS 1,250.00
+                    <span class="balance-change">+12% since last month</span>
+                </div>
+            </div>
+        </header>
+
+        <!-- Notification Toast (Hidden by default) -->
+        <div id="notificationToast" class="notification-toast hidden">
+            <div class="toast-icon">
+                <i class="fas fa-check"></i>
+            </div>
+            <div class="toast-content">
+                <strong>Withdrawal Request Submitted!</strong>
+                <p id="toastMessage">Your request for <strong>GHS 50.00</strong> has been received and is being processed. Funds will arrive in your mobile money account within 24 hours.</p>
+            </div>
+            <button class="toast-close" onclick="hideNotification()">
+                <i class="fas fa-times"></i>
+            </button>
+        </div>
+
+        <main class="withdrawal-form">
+            <div class="form-section">
+                <h2>
+                    <i class="fas fa-paper-plane"></i>
+                    Request Withdrawal
+                </h2>
+                <p class="form-note">
+                    Withdrawals will be processed to your registered mobile money account. 
+                    <strong>Minimum withdrawal is GHS 50. 2% will be deducted for charges</strong>
+                </p>
+
+                <form id="withdrawalForm">
+                    <div class="input-group">
+                        <label for="amount">
+                            <i class="fas fa-money-bill-wave"></i>
+                            Amount (GHS)
+                        </label>
+                        <div class="input-with-suffix">
+                            <input 
+                                type="number" 
+                                id="amount" 
+                                name="amount" 
+                                placeholder="50.00" 
+                                min="50" 
+                                step="0.01"
+                                required
+                            >
+                            <span class="input-suffix">GHS</span>
+                        </div>
+                        <div class="input-hint">
+                            <i class="fas fa-info-circle"></i>
+                            Minimum: GHS 50.00 • Maximum: GHS 5,000.00
+                        </div>
+                    </div>
+
+                    <!-- Mobile Money Provider Selection -->
+                    <div class="provider-selector">
+                        <div class="provider-option selected" data-provider="mtn">
+                            <div class="provider-icon">
+                                <i class="fas fa-sim-card"></i>
+                            </div>
+                            <div class="provider-name">MTN</div>
+                        </div>
+                        <div class="provider-option" data-provider="telecel">
+                            <div class="provider-icon">
+                                <i class="fas fa-sim-card"></i>
+                            </div>
+                            <div class="provider-name">Telecel</div>
+                        </div>
+                        <div class="provider-option" data-provider="airteltigo">
+                            <div class="provider-icon">
+                                <i class="fas fa-sim-card"></i>
+                            </div>
+                            <div class="provider-name">AirtelTigo</div>
+                        </div>
+                    </div>
+
+                    <!-- Recipient Information Inputs -->
+                    <div class="recipient-info">
+                        <div class="input-group">
+                            <label for="phoneNumber">
+                                <i class="fas fa-mobile-alt"></i>
+                                Recipient Phone Number
+                            </label>
+                            <div class="input-with-suffix">
+                                <input 
+                                    type="tel" 
+                                    id="phoneNumber" 
+                                    name="phoneNumber" 
+                                    placeholder="Enter 10-digit phone number" 
+                                    pattern="[0-9]{10}"
+                                    required
+                                >
+                                <span class="input-suffix" id="providerPrefix">+233</span>
+                            </div>
+                            <div class="input-hint">
+                                <i class="fas fa-info-circle"></i>
+                                Enter the phone number without the country code
+                            </div>
+                        </div>
+                        
+                        <div class="input-group">
+                            <label for="accountName">
+                                <i class="fas fa-user"></i>
+                                Name on Account
+                            </label>
+                            <div class="input-with-suffix">
+                                <input 
+                                    type="text" 
+                                    id="accountName" 
+                                    name="accountName" 
+                                    placeholder="Enter the name on the mobile money account" 
+                                    required
+                                >
+                            </div>
+                            <div class="input-hint">
+                                <i class="fas fa-info-circle"></i>
+                                Must match the name registered with the mobile money account
+                            </div>
+                        </div>
+                    </div>
+
+                    <button type="submit" class="withdraw-btn" id="withdrawBtn">
+                        <div class="btn-content" id="btnContent">
+                            <i class="fas fa-paper-plane"></i>
+                            Withdraw Funds
+                        </div>
+                        <div class="btn-loader hidden" id="btnLoader">
+                            <div class="spinner"></div>
+                            Processing...
+                        </div>
+                    </button>
+                </form>
+                
+                <div class="security-note">
+                    <i class="fas fa-lock"></i>
+                    <span>Your financial information is secured with bank-level encryption</span>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>

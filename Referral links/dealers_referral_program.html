@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Referral Program</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <!-- Sidebar Overlay -->
+    <div class="overlay" id="overlay"></div>
+
+    <!-- Sidebar Navigation -->
+    <div class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+            <button class="close-btn" id="closeBtn">
+                <i class="fas fa-times"></i>
+            </button>
+            <div class="sidebar-title">J.D Youngster Enterprise</div>
+            <div class="brand-logo">
+                <img src="WhatsApp Image 2026-01-31 at 4.07.11 PM.jpeg" alt="J.D You Logo">
+            </div>
+        </div>
+        <ul class="menu">
+            <a href="../Orders/new_orders.html" class="menu-item">
+                <i class="fas fa-shopping-cart"></i>
+                <span class="menu-text">Orders</span>
+            </a>
+            <a href="../Transactions/transactions2.html" class="menu-item">
+                <i class="fas fa-exchange-alt"></i>
+                <span class="menu-text">Transactions</span>
+            </a>
+            <a href="../Referral Prices/dealers_referral_prices.html" class="menu-item">
+                <i class="fas fa-tags"></i>
+                <span class="menu-text">Referral Prices</span>
+            </a>
+            <a href="../Referral links/dealers_referral_program.html" class="menu-item active">
+                <i class="fas fa-link"></i>
+                <span class="menu-text">Referral Links</span>
+            </a>
+            <a href="../Withdrawals/withdrawal_page.html" class="menu-item">
+                <i class="fas fa-money-bill-wave"></i>
+                <span class="menu-text">Withdraw Earnings</span>
+            </a>
+            <li class="menu-item logout" id="logoutBtn">
+                <i class="fas fa-sign-out-alt"></i>
+                <span class="menu-text">Log Out</span>
+            </li>
+        </ul>
+    </div>
+
+    <div class="main-container">
+        <div class="container">
+            <header>
+                <div class="header-content">
+                    <button class="menu-btn" id="menuBtn">
+                        <i class="fas fa-bars"></i>
+                    </button>
+                    <div class="logo">
+                        <i class="fas fa-user-friends"></i>
+                        <h1>Referrals</h1>
+                    </div>
+                </div>
+            </header>
+
+            <div class="description">
+                <p>Track your referral activity, commission earnings, and invite new users.</p>
+            </div>
+
+            <!-- Stats overview (static placeholders — wire to real data as needed) -->
+            <div class="stats-overview">
+                <div class="stat-card">
+                    <div class="stat-icon"><i class="fas fa-money-bill-wave"></i></div>
+                    <div class="stat-title">Total Referrals</div>
+                    <div class="stat-value" id="totalReferralsValue">0</div>
+                    <div class="stat-change positive">
+                        <i class="fas fa-arrow-up"></i> Total people who ordered via your referral links
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-icon"><i class="fas fa-coins"></i></div>
+                    <div class="stat-title">Commission Earned</div>
+                    <div class="stat-value" id="commissionEarnedValue">GHS 0.00</div>
+                    <div class="stat-change positive">
+                        <i class="fas fa-arrow-up"></i> Earnings available for withdrawal
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-icon"><i class="fas fa-users"></i></div>
+                    <div class="stat-title">Active Referrals</div>
+                    <div class="stat-value" id="activeReferralsValue">0</div>
+                    <div class="stat-change positive">
+                        <i class="fas fa-arrow-up"></i> Selling in the last 30 days
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-icon"><i class="fas fa-user-slash"></i></div>
+                    <div class="stat-title">Inactive Referrals</div>
+                    <div class="stat-value" id="inactiveReferralsValue">0</div>
+                    <div class="stat-change negative">
+                        <i class="fas fa-arrow-down"></i> No orders in 30+ days
+                    </div>
+                </div>
+            </div>
+
+            <div class="footer-note">
+                Note: Set prices for each package before sharing your referral link.
+            </div>
+
+            <!--
+                DYNAMIC REFERRAL LINK SECTIONS
+                ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                script.js calls GET /api/my-permitted-client-types and builds one
+                .referral-section block per permitted type at runtime.
+
+                The admin controls which client types appear here by ticking the
+                desired types in the user's "Permitted Client Types" panel
+                (PUT /api/admin/users/:id/permitted-types).
+
+                If the admin adds a brand-new client type (e.g. "Franchise Partners"),
+                it will automatically appear here for any user who has it ticked —
+                no HTML changes needed.
+            -->
+            <div id="referralLinksContainer">
+                <!-- Populated dynamically by script.js → renderReferralLinkSections() -->
+                <div style="text-align:center;padding:24px;opacity:.5;">
+                    <i class="fas fa-spinner fa-spin"></i> Loading your referral links...
+                </div>
+            </div>
+
+            <!-- Referred Users Section -->
+            <div class="referred-users-section">
+                <h2 class="referred-users-title">
+                    <i class="fas fa-users"></i>
+                    Referred Users <span class="referred-users-count" id="referredUsersCount">(0)</span>
+                </h2>
+                <div class="referred-users-content" id="referredUsersContent">
+                    <div class="referral-lists" style="display:grid;gap:20px;">
+                        <div class="referral-list" style="background:#ffffff;border:1px solid #e5e7eb;border-radius:12px;padding:16px;">
+                            <h3 style="margin-bottom:12px;">Active Referrals</h3>
+                            <p style="margin-bottom:12px;color:#4b5563;">These tell you who is actually buying.</p>
+                            <ul id="activeReferralsList" style="list-style:none;padding:0;margin:0;color:#111827;"></ul>
+                        </div>
+                        <div class="referral-list" style="background:#ffffff;border:1px solid #e5e7eb;border-radius:12px;padding:16px;">
+                            <h3 style="margin-bottom:12px;">Inactive Referrals</h3>
+                            <p style="margin-bottom:12px;color:#4b5563;">These tell you who to follow up with or drop.</p>
+                            <ul id="inactiveReferralsList" style="list-style:none;padding:0;margin:0;color:#111827;"></ul>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>

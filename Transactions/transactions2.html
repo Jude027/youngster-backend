@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Wallet Top-Up - J.D. Youngster Enterprise</title>
+    <meta name="description" content="Top up your wallet on J.D. Youngster Enterprise quickly and securely.">
+    <link rel="stylesheet" href="transactions.css" type="text/css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+</head>
+<body>
+    <div class="overlay" id="overlay"></div>
+
+    <!-- Sidebar Navigation -->
+    <div class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+            <button class="close-btn" id="closeBtn">
+                <i class="fas fa-times"></i>
+            </button>
+            <div class="sidebar-title">J.D Youngster Enterprise</div>
+            <div class="brand-logo">
+                <img src="WhatsApp Image 2026-01-31 at 4.07.11 PM.jpeg" alt="J.D You Logo">
+            </div>
+        </div>
+        <ul class="menu">
+            <!-- Orders -->
+            <a href="../Orders/new_orders.html" class="menu-item">
+                <i class="fas fa-shopping-cart"></i>
+                <span class="menu-text">Orders</span>
+            </a>
+
+            <!-- Transactions -->
+            <a href="../Transactions/transactions2.html" class="menu-item active">
+                <i class="fas fa-exchange-alt"></i>
+                <span class="menu-text">Transactions</span>
+            </a>
+
+            <!-- Referral Prices -->
+            <a href="../Referral%20Prices/dealers_referral_prices.html" class="menu-item">
+                <i class="fas fa-tags"></i>
+                <span class="menu-text">Referral Prices</span>
+            </a>
+
+            <!-- Referral Links -->
+            <a href="../Referral%20links/dealers_referral_program.html" class="menu-item">
+                <i class="fas fa-tags"></i>
+                <span class="menu-text">Referral Links</span>
+            </a>
+
+            <!-- Withdraw Earnings -->
+            <a href="../Withdrawals/withdrawal_page.html" class="menu-item">
+                <i class="fas fa-money-bill-wave"></i>
+                <span class="menu-text">Withdraw Earnings</span>
+            </a>
+
+            <!-- Log Out -->
+            <li class="menu-item logout" id="logoutBtn">
+                <i class="fas fa-sign-out-alt"></i>
+                <span class="menu-text">Log Out</span>
+            </li>
+        </ul>
+    </div>
+
+    <!-- Main Content -->
+    <div class="main-content">
+        <div class="orders-container">
+            <div class="orders-header">
+                <div class="header-left">
+                    <button class="menu-btn" id="menuBtn" aria-label="Open menu">
+                        <i class="fas fa-bars"></i>
+                    </button>
+                    <div class="header-title-section">
+                        <div class="header-title-text">
+                            <h1 class="header-orders-title">Transactions</h1>
+                            <p class="header-orders-subtitle">View all transactions here</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="search-container">
+                    <button class="search-btn" id="searchBtn" aria-label="Search">
+                        <i class="fas fa-search"></i>
+                    </button>
+                    <div class="search-bar" id="searchBar">
+                        <input type="text" class="search-input" placeholder="Search orders...">
+                    </div>
+                </div>
+            </div>
+            
+            <div class="orders-content">
+                <div class="table-header">
+                    <div class="table-title-section">
+                        <div class="orders-icon">
+                            <i class="fas fa-list"></i>
+                        </div>
+                        <div class="title-text">
+                            <h1 class="orders-title">Transaction History</h1>
+                            <p class="orders-subtitle">Recent transactions and their status</p>
+                        </div>
+                    </div>
+                    <button class="refresh-btn" id="refreshBtn" aria-label="Refresh orders">
+                        <i class="fas fa-sync-alt"></i>
+                    </button>
+                </div>
+                
+                <!-- Desktop Table with sample data -->
+                <table class="orders-table">
+                    <thead>
+                        <tr>
+                            <th>NUMBER</th>
+                            <th>DESCRIPTION</th>
+                            <th>AMOUNT</th>
+                            <th>METHOD</th>
+                            <th>DATE</th>
+                            <th>STATUS</th>
+                            <th>ACTIONS</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <!-- Populated by transactions.js -->
+                    </tbody>
+                </table>
+
+                <!-- Mobile Cards — populated by transactions.js -->
+                <div class="mobile-cards"></div>
+            </div>
+        </div>
+    </div>
+
+    <script src="transactions.js"></script>
+</body>
+</html>

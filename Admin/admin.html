@@ -1,0 +1,604 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin Panel - J.D Youngster Enterprise</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="admin.css">
+</head>
+<body>
+    <div class="admin-container">
+        <aside class="admin-sidebar" style="display:flex; flex-direction:column; overflow:hidden;">
+            <div class="sidebar-header">
+                <h2><i class="fas fa-crown"></i> Admin Panel</h2>
+            </div>
+            <nav class="admin-nav" style="overflow-y:auto; flex:1; display:flex; flex-direction:column;">
+                <button class="nav-btn active" data-tab="dashboard">
+                    <i class="fas fa-chart-line"></i> Dashboard
+                </button>
+                <button class="nav-btn" data-tab="users">
+                    <i class="fas fa-users"></i> Users
+                </button>
+                <button class="nav-btn" data-tab="orders">
+                    <i class="fas fa-shopping-cart"></i> Orders
+                </button>
+                <button class="nav-btn" data-tab="transactions">
+                    <i class="fas fa-exchange-alt"></i> Transactions
+                </button>
+                <button class="nav-btn" data-tab="prices">
+                    <i class="fas fa-tags"></i> Referral Prices
+                </button>
+                <button class="nav-btn" data-tab="base-prices">
+                    <i class="fas fa-database"></i> Base Prices
+                </button>
+                <button class="nav-btn" data-tab="master-prices">
+                    <i class="fas fa-database"></i> Master Prices
+                </button>
+                <button class="nav-btn" data-tab="role-price-mapping">
+                    <i class="fas fa-map-signs"></i> Role Price Mapping
+                </button>
+                <button class="nav-btn" data-tab="provider-api">
+                    <i class="fas fa-plug"></i> Provider API Config
+                </button>
+                <button class="nav-btn" data-tab="payment-gateways">
+                    <i class="fas fa-credit-card"></i> Payment Gateways
+                </button>
+                <button class="nav-btn" data-tab="withdrawals">
+                    <i class="fas fa-money-bill-wave"></i> Withdrawals
+                </button>
+                <button class="nav-btn" data-tab="stores">
+                    <i class="fas fa-store"></i> Store Settings
+                </button>
+                <button class="nav-btn logout-btn" id="logoutBtn">
+                    <i class="fas fa-sign-out-alt"></i> Logout
+                </button>
+            </nav>
+        </aside>
+
+        <main class="admin-main">
+            <header class="admin-header">
+                <h1 id="pageTitle">Dashboard</h1>
+                <div class="admin-user">
+                    <i class="fas fa-user-shield"></i>
+                    <span id="adminName">Admin</span>
+                </div>
+            </header>
+
+            <div class="admin-content">
+
+                <!-- ===== Dashboard Tab ===== -->
+                <div id="dashboardTab" class="tab-content active">
+                    <div class="stats-grid" id="statsGrid">
+                        <!-- Stats cards loaded by admin.js -->
+                    </div>
+                </div>
+
+                <!-- ===== Users Tab ===== -->
+                <div id="usersTab" class="tab-content">
+                    <div class="search-bar">
+                        <input type="text" id="userSearch" placeholder="Search users...">
+                        <button id="refreshUsers"><i class="fas fa-sync-alt"></i></button>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="admin-table" id="usersTable">
+                            <thead>
+                                <tr>
+                                    <th>ID</th>
+                                    <th>Username</th>
+                                    <th>Email</th>
+                                    <th>Business</th>
+                                    <th>Balance</th>
+                                    <th>Role</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- ===== Orders Tab ===== -->
+                <div id="ordersTab" class="tab-content">
+                    <div class="search-bar">
+                        <input type="text" id="orderSearch" placeholder="Search orders...">
+                        <button id="refreshOrders"><i class="fas fa-sync-alt"></i></button>
+                        <button id="testOrderBtn" style="background: #ff9800; color: white; padding: 8px 16px; border: none; border-radius: 5px; cursor: pointer; margin-left: 10px;"><i class="fas fa-flask"></i> Test Order</button>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="admin-table" id="ordersTable">
+                            <thead>
+                                <tr>
+                                    <th>ID</th>
+                                    <th>User</th>
+                                    <th>Beneficiary</th>
+                                    <th>Package</th>
+                                    <th>Bundle</th>
+                                    <th>Amount</th>
+                                    <th>Status</th>
+                                    <th>Created</th>
+                                    <th>Completed</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- ===== Transactions Tab ===== -->
+                <div id="transactionsTab" class="tab-content">
+                    <div class="search-bar">
+                        <input type="text" id="txnSearch" placeholder="Search transactions...">
+                        <button id="refreshTxns"><i class="fas fa-sync-alt"></i></button>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="admin-table" id="transactionsTable">
+                            <thead>
+                                <tr>
+                                    <th>ID</th>
+                                    <th>User</th>
+                                    <th>Description</th>
+                                    <th>Amount</th>
+                                    <th>Method</th>
+                                    <th>Status</th>
+                                    <th>Date</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- ===== Referral Prices Tab ===== -->
+                <div id="pricesTab" class="tab-content">
+                    <div class="search-bar">
+                        <input type="text" id="priceSearch" placeholder="Filter by provider/user...">
+                        <button id="refreshPrices"><i class="fas fa-sync-alt"></i></button>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="admin-table" id="pricesTable">
+                            <thead>
+                                <tr>
+                                    <th>User</th>
+                                    <th>Provider</th>
+                                    <th>Package</th>
+                                    <th>Client Type</th>
+                                    <th>Price (GHS)</th>
+                                    <th>Original</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- ===== Base Prices Tab ===== -->
+                <!--
+                    Each column = one client type.
+                    The prices here are the "original prices" that each role
+                    sees on their Referral Prices page, controlled by Role Price Mapping.
+                -->
+                <div id="base-pricesTab" class="tab-content">
+                    <div class="search-bar">
+                        <button id="addClientTypeBtn" class="btn-primary" style="background:#3498db;">
+                            <i class="fas fa-plus"></i> Add Client Type
+                        </button>
+                        <button id="addPackageRowBtn" class="btn-primary" style="background:#2ecc71;">
+                            <i class="fas fa-plus"></i> Add Package Row
+                        </button>
+                        <button id="refreshBasePrices" style="margin-left:auto;">
+                            <i class="fas fa-sync-alt"></i> Refresh
+                        </button>
+                        <button id="saveBasePrices" class="btn-primary" style="background:#e67e22;">
+                            <i class="fas fa-save"></i> Save All Changes
+                        </button>
+                    </div>
+                    <p style="font-size:0.82rem;color:#888;margin:4px 0 12px 2px;">
+                        <i class="fas fa-info-circle" style="color:#3498db;"></i>
+                        Each column is a <strong>client type</strong>. Prices entered here become the
+                        <em>Original Price</em> shown to users on their Referral Prices page,
+                        based on the mapping you configure in the
+                        <strong>Role Price Mapping</strong> tab.
+                    </p>
+                    <div class="table-responsive">
+                        <table class="admin-table" id="basePricesTable">
+                            <thead id="basePricesHeader">
+                                <!-- Generated dynamically -->
+                            </thead>
+                            <tbody id="basePricesBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- ===== Master Prices Tab ===== -->
+                <div id="master-pricesTab" class="tab-content">
+                    <div class="search-bar">
+                        <input type="text" id="masterPriceSearch" placeholder="Search provider or package...">
+                        <button id="refreshMasterPrices"><i class="fas fa-sync-alt"></i></button>
+                        <button id="addMasterPriceBtn" class="btn-primary" style="background:#2ecc71;">
+                            <i class="fas fa-plus"></i> Add Master Price
+                        </button>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="admin-table" id="masterPricesTable">
+                            <thead>
+                                <tr>
+                                    <th>Provider</th>
+                                    <th>Package Name</th>
+                                    <th>Client Type (Role)</th>
+                                    <th>Original Price (GHS)</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- ===== Role Price Mapping Tab ===== -->
+                <div id="role-price-mappingTab" class="tab-content">
+
+                    <!-- Info banner -->
+                    <div style="
+                        margin-bottom: 18px;
+                        padding: 14px 18px;
+                        background: #eaf4fb;
+                        border-left: 4px solid #3498db;
+                        border-radius: 6px;
+                        font-size: 0.9rem;
+                        line-height: 1.75;
+                    ">
+                        <strong>
+                            <i class="fas fa-info-circle" style="color:#3498db;"></i>
+                            How Role Price Mapping works
+                        </strong><br>
+                        Every user has a <strong>Role</strong> (e.g. <em>Dealers</em>, <em>Agents</em>,
+                        <em>Customers</em>). When they open their <em>Referral Prices</em> page the
+                        <strong>"Original Price"</strong> column will display the price taken from
+                        whichever <strong>Base Price column</strong> you map to that role here.<br>
+                        <span style="color:#555;">
+                            <strong>Example:</strong> map <em>Dealers → Dealers column</em> and
+                            <em>Agents → Agents column</em> so each group sees the price that was
+                            set for them in Base Prices.<br>
+                            If no mapping exists for a role the system automatically falls back to
+                            Master Price values.
+                        </span>
+                    </div>
+
+                    <div class="search-bar">
+                        <button id="refreshRoleMappings">
+                            <i class="fas fa-sync-alt"></i> Refresh
+                        </button>
+                        <button id="addRoleMappingBtn" class="btn-primary" style="background:#9b59b6;">
+                            <i class="fas fa-plus"></i> Add / Update Mapping
+                        </button>
+                    </div>
+
+                    <div class="table-responsive">
+                        <table class="admin-table" id="roleMappingTable">
+                            <thead>
+                                <tr>
+                                    <th>User Role</th>
+                                    <th>Base Price Column shown as "Original Price"</th>
+                                    <th>Last Updated</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <!-- Populated by admin.js → loadRoleMappings() -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- ===== Provider API Config Tab ===== -->
+                <div id="provider-apiTab" class="tab-content">
+                    <div class="form-section">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                            <h3 style="margin: 0;">Configure Provider API Integration</h3>
+                            <button id="addNewAPIConfigBtn" class="btn-primary" style="width: auto;">
+                                <i class="fas fa-plus"></i> Add New Configuration
+                            </button>
+                        </div>
+
+                        <!-- Configured Providers List -->
+                        <div id="configuredProvidersList" style="margin-bottom: 20px;">
+                            <h4>Existing Configurations</h4>
+                            <div id="configuredProvidersContainer" style="display: flex; flex-wrap: wrap; gap: 10px;">
+                                <!-- Configured providers will be shown here -->
+                            </div>
+                        </div>
+
+                        <!-- WhatsApp Session Management -->
+                        <div style="background:#fff8e1;border:1px solid #ffca28;border-radius:8px;padding:16px;margin-bottom:20px;">
+                            <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+                                <div>
+                                    <h4 style="margin:0 0 4px;color:#f57f17;"><i class="fab fa-whatsapp"></i> WhatsApp Notifier Session</h4>
+                                    <p style="margin:0;font-size:13px;color:#795548;">If WhatsApp orders are hanging or failing, the session may be expired. Reset it here — a fresh QR code will appear on the next WhatsApp order.</p>
+                                </div>
+                                <button id="resetWhatsAppSessionBtn" class="btn-primary" style="width:auto;background:linear-gradient(135deg,#25D366,#128C7E);">
+                                    <i class="fas fa-sync-alt"></i> Reset WhatsApp Session
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="providerSelect">Select Provider to Configure</label>
+                            <div style="display: flex; gap: 10px; align-items: center;">
+                                <select id="providerSelect" style="flex: 1;">
+                                    <option value="">-- Select a Provider --</option>
+                                </select>
+                                <button id="deleteProviderBtn" class="btn-danger" style="width:auto; white-space:nowrap; display:none;" onclick="deleteSelectedProvider()">
+                                    <i class="fas fa-trash"></i> Delete
+                                </button>
+                            </div>
+                        </div>
+
+                        <div id="apiConfigForm" style="display:none;">
+                            <h4>Order Routing</h4>
+
+                            <div class="form-group">
+                                <label for="orderHandler">Who should handle this provider's orders?</label>
+                                <select id="orderHandler">
+                                    <option value="">-- Select Routing --</option>
+                                    <option value="auto">Automatic</option>
+                                    <option value="api">Universal API</option>
+                                    <option value="whatsapp">WhatsApp Notifier</option>
+                                </select>
+                            </div>
+
+                            <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px;">
+                                <div class="form-group">
+                                    <label for="whatsappMinGb">WhatsApp Min GB</label>
+                                    <input type="number" id="whatsappMinGb" min="0" step="0.5" placeholder="Optional">
+                                </div>
+                                <div class="form-group">
+                                    <label for="whatsappMaxGb">WhatsApp Max GB</label>
+                                    <input type="number" id="whatsappMaxGb" min="0" step="0.5" placeholder="Optional">
+                                </div>
+                                <div class="form-group">
+                                    <label for="apiMinGb">API Min GB</label>
+                                    <input type="number" id="apiMinGb" min="0" step="0.5" placeholder="Optional">
+                                </div>
+                                <div class="form-group">
+                                    <label for="apiMaxGb">API Max GB</label>
+                                    <input type="number" id="apiMaxGb" min="0" step="0.5" placeholder="Optional">
+                                </div>
+                            </div>
+
+                            <h4>API Configuration</h4>
+                            
+                            <div style="background-color: #fff3cd; border: 1px solid #ffc107; border-radius: 4px; padding: 12px; margin-bottom: 16px; color: #856404;">
+                                <strong>⚠️ Important:</strong> When pasting API configuration values, use <strong>plain text</strong> only (not from Word, PDF, or email).
+                                If you see encoding errors, clear the fields and re-enter the values carefully.
+                            </div>
+                            
+                            <div class="form-group">
+                                <label for="apiEnabled">
+                                    <input type="checkbox" id="apiEnabled"> Enable API Integration
+                                </label>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="apiConfigSelect">Saved API Configuration</label>
+                                <select id="apiConfigSelect"></select>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="apiConfigName">Configuration Name</label>
+                                <input type="text" id="apiConfigName" placeholder="e.g. XpresPortal, iGet">
+                            </div>
+
+                            <div class="form-group">
+                                <label for="apiType">Auth Type</label>
+                                <select id="apiType">
+                                    <option value="bearer-token">Bearer Token</option>
+                                    <option value="api-key">API Key</option>
+                                    <option value="oauth">OAuth</option>
+                                </select>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="baseUrl">Base URL</label>
+                                <input type="text" id="baseUrl" placeholder="https://api.provider.com">
+                            </div>
+
+                            <div class="form-group">
+                                <label for="authHeaderName">Auth Header Name</label>
+                                <input type="text" id="authHeaderName" placeholder="Authorization or X-API-Key">
+                            </div>
+
+                            <div class="form-group">
+                                <label for="authHeaderValue">Auth Header Value (API Key/Token)</label>
+                                <input type="password" id="authHeaderValue" placeholder="Bearer YOUR_TOKEN or just YOUR_API_KEY">
+                            </div>
+
+                            <div class="form-group">
+                                <label for="orderEndpoint">Order Endpoint</label>
+                                <input type="text" id="orderEndpoint" placeholder="/v1/purchaseBundle">
+                            </div>
+
+                            <div class="form-group">
+                                <label for="orderMethod">Order Method</label>
+                                <select id="orderMethod">
+                                    <option value="POST">POST</option>
+                                    <option value="PUT">PUT</option>
+                                    <option value="GET">GET</option>
+                                </select>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="statusEndpoint">Status Check Endpoint</label>
+                                <input type="text" id="statusEndpoint" placeholder="/v1/checkOrderStatus/:reference">
+                            </div>
+
+                            <div class="form-group">
+                                <label for="balanceEndpoint">Balance Endpoint</label>
+                                <input type="text" id="balanceEndpoint" placeholder="/v1/getWalletBalance">
+                            </div>
+
+                            <h4>Request/Response Mapping</h4>
+                            
+                            <div class="form-group">
+                                <label>Request Payload Mapping (JSON)</label>
+                                <textarea id="payloadMapping" placeholder='{"network":"network","phoneNumber":"msisdn","capacity":"capacity","reference":"reference"}' rows="4"></textarea>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="successField">Success Field Path</label>
+                                <input type="text" id="successField" placeholder="success or data.success">
+                            </div>
+
+                            <div class="form-group">
+                                <label for="dataField">Data Field Path</label>
+                                <input type="text" id="dataField" placeholder="data">
+                            </div>
+
+                            <div class="form-group">
+                                <label for="phoneFormat">Phone Number Format</label>
+                                <select id="phoneFormat">
+                                    <option value="international">International (+233...)</option>
+                                    <option value="national">National (0...)</option>
+                                    <option value="raw">Raw (digits only)</option>
+                                    <option value="e164">E.164 (+233...)</option>
+                                </select>
+                            </div>
+
+                            <button id="saveApiConfig" class="btn-primary" style="width:100%;">
+                                <i class="fas fa-save"></i> Save API Configuration
+                            </button>
+                            <button id="testApiConfig" class="btn-primary" style="width:100%; margin-top:10px;">
+                                <i class="fas fa-flask"></i> Test API Connection
+                            </button>
+                        </div>
+
+                        <div id="apiLogsContainer" style="display:none; margin-top:20px;">
+                            <h4>API Interaction Logs</h4>
+                            <div class="table-responsive">
+                                <table class="admin-table" id="apiLogsTable">
+                                    <thead>
+                                        <tr>
+                                            <th>Request Time</th>
+                                            <th>Status</th>
+                                            <th>Reference</th>
+                                            <th>Response Status</th>
+                                            <th>Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody></tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ===== Payment Gateways Tab ===== -->
+                <div id="paymentGatewaysTab" class="tab-content">
+                    <div class="content-header">
+                        <h2><i class="fas fa-credit-card"></i> Payment Gateways Configuration</h2>
+                        <p>Configure collection keys, API base URLs, fees, and switch gateway runtime environments dynamically.</p>
+                    </div>
+
+                    <div class="admin-card">
+                        <div class="search-bar" style="margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center;">
+                            <h3 style="color: var(--text-primary);"><i class="fas fa-sliders-h"></i> Active Gateways</h3>
+                            <button id="createPaymentGatewayBtn" class="btn-success">
+                                <i class="fas fa-plus"></i> New Gateway
+                            </button>
+                        </div>
+
+                        <div class="table-responsive">
+                            <table class="admin-table" id="gatewaysTable">
+                                <thead>
+                                    <tr>
+                                        <th>Gateway Name</th>
+                                        <th>Type</th>
+                                        <th>Status</th>
+                                        <th>Environment Mode</th>
+                                        <th>Min/Max Limit</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="gatewaysTableBody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <div id="paymentGatewayConfigContainer" style="margin-top: 24px;">
+                        <div style="text-align: center; color: #999;">
+                            <p>Click "Configure" on a gateway row above to manage its settings.</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ===== Withdrawals Tab ===== -->
+                <div id="withdrawalsTab" class="tab-content">
+                    <div class="search-bar">
+                        <input type="text" id="wdSearch" placeholder="Search withdrawals...">
+                        <button id="refreshWd"><i class="fas fa-sync-alt"></i></button>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="admin-table" id="withdrawalsTable">
+                            <thead>
+                                <tr>
+                                    <th>User</th>
+                                    <th>Amount</th>
+                                    <th>Provider</th>
+                                    <th>Phone</th>
+                                    <th>Account Name</th>
+                                    <th>Status</th>
+                                    <th>Requested</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- ===== Store Settings Tab ===== -->
+                <div id="storesTab" class="tab-content">
+                    <div class="search-bar">
+                        <input type="text" id="storeSearch" placeholder="Search store...">
+                        <button id="refreshStores"><i class="fas fa-sync-alt"></i></button>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="admin-table" id="storesTable">
+                            <thead>
+                                <tr>
+                                    <th>User</th>
+                                    <th>Store Name</th>
+                                    <th>Description</th>
+                                    <th>WhatsApp</th>
+                                    <th>Group Link</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </div>
+
+            </div><!-- /.admin-content -->
+        </main>
+    </div><!-- /.admin-container -->
+
+    <!-- ===== Modal ===== -->
+    <div id="editModal" class="modal">
+        <div class="modal-content">
+            <span class="close">&times;</span>
+            <h3 id="modalTitle">Edit Item</h3>
+            <form id="editForm">
+                <div id="modalFields"></div>
+                <button type="submit" class="btn-save">Save Changes</button>
+            </form>
+        </div>
+
+    </div>
+
+    <script src="admin.js"></script>
+</body>
+</html>
