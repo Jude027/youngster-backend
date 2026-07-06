@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Wallet Top-Up - J.D. Youngster Enterprise</title>
+    <meta name="description" content="Top up your wallet on J.D. Youngster Enterprise quickly and securely.">
+    <link rel="stylesheet" href="transactions.css" type="text/css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+</head>
+<body>
+    <div class="overlay" id="overlay"></div>
+
+    <!-- Sidebar Navigation -->
+    <div class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+            <button class="close-btn" id="closeBtn">
+                <i class="fas fa-times"></i>
+            </button>
+            <div class="sidebar-title" id="sidebarTitle">J.D Youngster Enterprise</div>
+            <div class="brand-logo" id="sidebarLogo">
+                <img src="WhatsApp Image 2026-01-31 at 4.07.11 PM.jpeg" alt="J.D You Logo">
+            </div>
+        </div>
+        <ul class="menu">
+             <!-- Dashboard -->
+            <a href="../dashboard2.html" class="menu-item" id="dashboardMenuLink">
+                <i class="fas fa-tachometer-alt"></i>
+                <span class="menu-text">Dashboard</span>
+            </a>
+
+            <a href="../Orders/new_orders.html" class="menu-item">
+                <i class="fas fa-shopping-cart"></i>
+                <span class="menu-text">Orders</span>
+            </a>
+            
+            <!-- Transactions -->
+            <a href="#" class="menu-item active">
+                <i class="fas fa-exchange-alt"></i>
+                <span class="menu-text">Transactions</span>
+            </a>
+        </ul>
+    </div>
+
+    <!-- Main Content -->
+    <div class="main-content">
+        <div class="orders-container">
+            <div class="orders-header">
+                <div class="header-left">
+                    <button class="menu-btn" id="menuBtn" aria-label="Open menu">
+                        <i class="fas fa-bars"></i>
+                    </button>
+                    <div class="header-title-section">
+                        <div class="header-title-text">
+                            <h1 class="header-orders-title">Transactions</h1>
+                            <p class="header-orders-subtitle">View all transactions here</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="search-container">
+                    <button class="search-btn" id="searchBtn" aria-label="Search">
+                        <i class="fas fa-search"></i>
+                    </button>
+                    <div class="search-bar" id="searchBar">
+                        <input type="text" class="search-input" placeholder="Search orders...">
+                    </div>
+                </div>
+            </div>
+            
+            <div class="orders-content">
+                <div class="table-header">
+                    <div class="table-title-section">
+                        <div class="orders-icon">
+                            <i class="fas fa-list"></i>
+                        </div>
+                        <div class="title-text">
+                            <h1 class="orders-title">Transaction History</h1>
+                            <p class="orders-subtitle">Recent transactions and their status</p>
+                        </div>
+                    </div>
+                    <button class="refresh-btn" id="refreshBtn" aria-label="Refresh orders">
+                        <i class="fas fa-sync-alt"></i>
+                    </button>
+                </div>
+                
+                <!-- Desktop Table with sample data -->
+                <table class="orders-table">
+                    <thead>
+                        <tr>
+                            <th>NUMBER</th>
+                            <th>DESCRIPTION</th>
+                            <th>AMOUNT</th>
+                            <th>METHOD</th>
+                            <th>DATE</th>
+                            <th>STATUS</th>
+                            <th>ACTIONS</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <!-- Sample row 1 - complete -->
+                        <tr>
+                            <td>Payment made for MTN 10GB</td>
+                            <td>GHC 50.00</td>
+                            <td>2025-02-10 14:30</td>
+                            <td><span class="status-badge status-complete">Complete</span></td>
+                            <td><a href="/re-verify-transaction/101" class="action-btn" data-txn-id="101"><i class="fa-solid fa-rotate"></i> Refresh</a></td>
+                        </tr>
+                        <!-- Sample row 2 - pending -->
+                        </tr>
+                            <td>Payment made for MTN 30GB</td>
+                            <td>GHC 100.00</td>
+                            <td>2025-02-12 09:15</td>
+                            <td><span class="status-badge status-pending">Pending</span></td>
+                            <td><a href="/re-verify-transaction/102" class="action-btn" data-txn-id="102"><i class="fa-solid fa-rotate"></i> Refresh</a></td>
+                        </tr>
+                        <!-- Sample row 3 - failed -->
+                        <tr>
+                            <td>Payment made for MTN 40GB</td>
+                            <td>GHC 150.00</td>
+                            <td>2025-02-14 11:20</td>
+                            <td><span class="status-badge status-failed">Failed</span></td>
+                            <td><a href="/re-verify-transaction/103" class="action-btn" data-txn-id="103"><i class="fa-solid fa-rotate"></i> Refresh</a></td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <!-- Mobile Cards with sample data -->
+                <div class="mobile-cards">
+                    <div class="order-card">
+                        <div class="card-row"><span class="card-label">DESCRIPTION:</span><span class="card-value">Payment made for MTN 10GB</span></div>
+                        <div class="card-row"><span class="card-label">AMOUNT:</span><span class="card-value">GHC 50.00</span></div>
+                        <div class="card-row"><span class="card-label">DATE:</span><span class="card-value">2025-02-10 14:30</span></div>
+                        <div class="card-row"><span class="card-label">STATUS:</span><span class="card-value"><span class="status-badge status-complete">Complete</span></span></div>
+                        <div class="card-row"><span class="card-label">ACTIONS:</span><span class="card-value"><a href="/re-verify-transaction/101" class="action-btn"><i class="fa-solid fa-rotate"></i> Refresh</a></span></div>
+                    </div>
+                    <div class="order-card">
+                        <div class="card-row"><span class="card-label">DESCRIPTION:</span><span class="card-value">Payment made for MTN 30GB</span></div>
+                        <div class="card-row"><span class="card-label">AMOUNT:</span><span class="card-value">GHC 100.00</span></div>
+                        <div class="card-row"><span class="card-label">DATE:</span><span class="card-value">2025-02-12 09:15</span></div>
+                        <div class="card-row"><span class="card-label">STATUS:</span><span class="card-value"><span class="status-badge status-pending">Pending</span></span></div>
+                        <div class="card-row"><span class="card-label">ACTIONS:</span><span class="card-value"><a href="/re-verify-transaction/102" class="action-btn"><i class="fa-solid fa-rotate"></i> Refresh</a></span></div>
+                    </div>
+                    <div class="order-card">
+                        <div class="card-row"><span class="card-label">DESCRIPTION:</span><span class="card-value">Payment made for MTN 40GB</span></div>
+                        <div class="card-row"><span class="card-label">AMOUNT:</span><span class="card-value">GHC 150.00</span></div>
+                        <div class="card-row"><span class="card-label">DATE:</span><span class="card-value">2025-02-14 11:20</span></div>
+                        <div class="card-row"><span class="card-label">STATUS:</span><span class="card-value"><span class="status-badge status-failed">Failed</span></span></div>
+                        <div class="card-row"><span class="card-label">ACTIONS:</span><span class="card-value"><a href="/re-verify-transaction/103" class="action-btn"><i class="fa-solid fa-rotate"></i> Refresh</a></span></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="transactions.js"></script>
+</body>
+</html>

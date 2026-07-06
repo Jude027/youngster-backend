@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title id="pageTitle">Youngster Data Shop</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="dashboard.css">
+</head>
+<body>
+    <!-- Sidebar Overlay -->
+    <div class="overlay" id="overlay"></div>
+    
+    <!-- Sidebar Navigation -->
+    <div class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+            <button class="close-btn" id="closeBtn">
+                <i class="fas fa-times"></i>
+            </button>
+            <div class="sidebar-title" id="sidebarTitle">Youngster Data Shop</div>
+            <div class="brand-logo" id="sidebarLogo">
+                <img src="WhatsApp Image 2026-01-31 at 4.07.11 PM.jpeg" alt="J.D You Logo">
+            </div>
+        </div>
+        <ul class="menu">
+            <!-- Dashboard -->
+            <a href="#" class="menu-item active" id="dashboardMenuLink">
+                <i class="fas fa-tachometer-alt"></i>
+                <span class="menu-text">Dashboard</span>
+            </a>
+            
+            <a href="./Orders/new_orders.html" class="menu-item">
+                <i class="fas fa-shopping-cart"></i>
+                <span class="menu-text">Orders</span>
+            </a>
+
+            <a href="./Transactions/transactions2.html" class="menu-item">
+                <i class="fas fa-shopping-cart"></i>
+                <span class="menu-text">Transactions</span>
+            </a>
+        </ul>
+    </div>
+    
+    <!-- Main Container - Everything inside -->
+    <div class="main-container">
+        <!-- Header with sidebar toggle and theme toggle inside -->
+        <div class="header">
+            <div class="header-left">
+                <button class="menu-btn" id="menuBtn">
+                    <i class="fas fa-bars"></i>
+                </button>
+            </div>
+            
+            <div class="header-title">
+                <h1 id="headerStoreName">Youngster Data Shop</h1>
+                <p class="subtitle" id="headerStoreDesc">Your trusted partner for data services</p>
+            </div>
+            
+            <div class="header-right">
+                <button class="theme-toggle" id="themeToggle">
+                    <i class="fas fa-moon" id="themeIcon"></i>
+                </button>
+            </div>
+        </div>
+        
+        <!-- Content Area -->
+        <div class="content">
+            <h2 class="section-title">
+                <i class="fas fa-wifi"></i>
+                Buy Data Bundles
+            </h2>
+            
+            <div class="network-cards">
+                <!-- MTN Card -->
+                <a href="#" onclick="handlePackageCardClick('MTN');return false;" class="network-card">
+                    <div class="network-logo">
+                        <img src="mtn-logo (1).png" alt="MTN Logo">
+                    </div>
+                    <div class="network-info">
+                        <div class="network-name">MTN</div>
+                        <div class="network-tagline">Normal Delivery</div>
+                    </div>
+                    <i class="fas fa-chevron-right"></i>
+                </a>
+                
+                <!-- Telecel Card -->
+                <a href="#" onclick="handlePackageCardClick('Telecel');return false;" class="network-card">
+                    <div class="network-logo">
+                        <img src="telecel.jpg" alt="Telecel Logo">
+                    </div>
+                    <div class="network-info">
+                        <div class="network-name">Telecel Data</div>
+                        <div class="network-tagline">Swift Delivery</div>
+                    </div>
+                    <i class="fas fa-chevron-right"></i>
+                </a>
+                
+                <!-- AirtelTigo Card -->
+                <a href="#" onclick="handlePackageCardClick('AT Ishare');return false;" class="network-card">
+                    <div class="network-logo">
+                        <img src="at.webp" alt="AirtelTigo Logo">
+                    </div>
+                    <div class="network-info">
+                        <div class="network-name">AT Ishare</div>
+                        <div class="network-tagline">Instant Delivery</div>
+                    </div>
+                    <i class="fas fa-chevron-right"></i>
+                </a>
+
+                <!-- AirtelTigo Bigtime Card -->
+                <a href="#" onclick="handlePackageCardClick('AT Bigtime');return false;" class="network-card">
+                    <div class="network-logo">
+                        <img src="at.webp" alt="AirtelTigo Logo">
+                    </div>
+                    <div class="network-info">
+                        <div class="network-name">AT Bigtime</div>
+                        <div class="network-tagline">Normal Delivery</div>
+                    </div>
+                    <i class="fas fa-chevron-right"></i>
+                </a>
+            </div>
+            
+            <h2 class="section-title">
+                <i class="fas fa-gift"></i>
+                Special Offers
+            </h2>
+            
+            <!-- Special Offers - Vertical List -->
+            <div class="special-offers">
+                <!-- MTN AFA Card -->
+                <a href="#" onclick="handlePackageCardClick('MTN AFA');return false;" class="network-card">
+                    <div class="network-logo">
+                        <img src="MTN-PR-15 (1).png" alt="MTN Logo">
+                    </div>
+                    <div class="network-info">
+                        <div class="network-name">MTN AFA</div>
+                        <div class="network-tagline">Registration is within 24 hours</div>
+                    </div>
+                    <i class="fas fa-chevron-right"></i>
+                </a>
+
+            </div>
+        </div>
+        
+        <!-- Footer -->
+        <div class="footer">
+            <p>© 2026 <span id="footerStoreName">J.D Youngster Enterprise</span>. All rights reserved.</p>
+        </div>
+    </div>
+
+    <!-- WhatsApp Floating Button -->
+    <div class="whatsapp-float" id="whatsappFloat">
+        <div class="whatsapp-main-btn" id="whatsappBtn">
+            <i class="fab fa-whatsapp"></i>
+        </div>
+        <div class="whatsapp-options" id="whatsappOptions">
+            <div class="whatsapp-close" id="whatsappClose">
+                <i class="fas fa-times"></i>
+            </div>
+            <a id="waGroupLink" href="https://chat.whatsapp.com/HwqFj1zr3mC1az0lZl0ROQ" target="_blank" class="whatsapp-option join-group">
+                <i class="fas fa-users"></i>
+                <span class="whatsapp-option-text">Join Group</span>
+            </a>
+            <a id="waAdminLink" href="https://wa.me/233501784283" target="_blank" class="whatsapp-option chat-admin">
+                <i class="fas fa-headset"></i>
+                <span class="whatsapp-option-text">Chat Admin</span>
+            </a>
+        </div>
+    </div>
+
+    <script src="dashboard.js"></script>
+    <script src="storefront-inject.js"></script>
+</body>
+</html>

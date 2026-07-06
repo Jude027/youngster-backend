@@ -1,0 +1,549 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Payment Processing</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Segoe UI', sans-serif; }
+
+        body {
+            background: #f0f2f5;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .card {
+            background: white;
+            border-radius: 16px;
+            width: 100%;
+            max-width: 420px;
+            box-shadow: 0 4px 24px rgba(0,0,0,0.08);
+            overflow: hidden;
+        }
+
+        .card-header {
+            background: #0d1b2a;
+            color: white;
+            padding: 20px 24px;
+            text-align: center;
+        }
+
+        .card-header .merchant-email {
+            font-size: 0.8rem;
+            color: rgba(255,255,255,0.6);
+            margin-bottom: 4px;
+        }
+
+        .card-header .amount {
+            font-size: 1.8rem;
+            font-weight: 700;
+            color: white;
+        }
+
+        .card-body {
+            padding: 40px 24px 32px;
+            text-align: center;
+        }
+
+        /* States */
+        .state { display: none; }
+        .state.active { display: block; }
+
+        /* Processing state */
+        .spinner-wrap {
+            margin: 0 auto 24px;
+            width: 64px;
+            height: 64px;
+            position: relative;
+        }
+
+        .spinner-ring {
+            border: 4px solid #e0e0e0;
+            border-top: 4px solid #0d1b2a;
+            border-radius: 50%;
+            width: 64px;
+            height: 64px;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .state-title {
+            font-size: 1rem;
+            color: #333;
+            margin-bottom: 8px;
+            font-weight: 500;
+            line-height: 1.5;
+        }
+
+        .state-sub {
+            font-size: 0.85rem;
+            color: #999;
+            margin-bottom: 32px;
+        }
+
+        /* Success state */
+        .success-icon {
+            width: 72px;
+            height: 72px;
+            background: #dcfce7;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 20px;
+            font-size: 2rem;
+            color: #16a34a;
+        }
+
+        /* Failed state */
+        .failed-icon {
+            width: 72px;
+            height: 72px;
+            background: #fee2e2;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 20px;
+            font-size: 2rem;
+            color: #dc2626;
+        }
+
+        .btn-primary {
+            width: 100%;
+            padding: 15px;
+            background: #0d1b2a;
+            color: white;
+            border: none;
+            border-radius: 10px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+            margin-bottom: 10px;
+        }
+
+        .btn-primary:hover { background: #1a2f45; }
+        .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        .btn-cancel {
+            width: 100%;
+            padding: 12px;
+            background: transparent;
+            color: #888;
+            border: none;
+            font-size: 0.95rem;
+            cursor: pointer;
+            transition: color 0.2s;
+        }
+
+        .btn-cancel:hover { color: #333; }
+
+        .secured-badge {
+            text-align: center;
+            margin-top: 20px;
+            color: #aaa;
+            font-size: 0.8rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+        }
+
+        .transaction-id {
+            font-size: 0.75rem;
+            color: #bbb;
+            margin-top: 16px;
+            word-break: break-all;
+        }
+
+        .order-details {
+            background: #f8f9fb;
+            border-radius: 10px;
+            padding: 16px;
+            margin-bottom: 24px;
+            text-align: left;
+        }
+
+        .detail-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 5px 0;
+            font-size: 0.88rem;
+        }
+
+        .detail-row .label { color: #888; }
+        .detail-row .value { color: #222; font-weight: 600; }
+    </style>
+</head>
+<body>
+
+    <div class="card">
+        <div class="card-header">
+            <div class="merchant-email" id="merchantEmail">Your Store</div>
+            <div class="amount">GH₵<span id="displayAmount">0.00</span></div>
+        </div>
+
+        <div class="card-body">
+
+            <!-- Processing State -->
+            <div class="state active" id="stateProcessing">
+                <div class="spinner-wrap">
+                    <div class="spinner-ring"></div>
+                </div>
+                <div class="state-title">Your payment is being processed.<br>Please check your phone for a prompt<br>and enter your PIN to complete.</div>
+                <div class="state-sub">Do not close this page.</div>
+
+                <button class="btn-primary" id="iPaidBtn" onclick="handleIPaid()">
+                    <i class="fas fa-check-circle"></i> I Have Paid
+                </button>
+                <button class="btn-cancel" onclick="handleCancel()">Cancel</button>
+            </div>
+
+            <!-- Verifying State -->
+            <div class="state" id="stateVerifying">
+                <div class="spinner-wrap">
+                    <div class="spinner-ring"></div>
+                </div>
+                <div class="state-title">Verifying your payment...</div>
+                <div class="state-sub" id="verifyingStatus">
+                    Make sure you have approved the payment on your phone.<br>
+                    <small style="font-size: 0.8rem; color: #999; margin-top: 8px; display: block;">
+                        The system is confirming your payment. This may take up to 2 minutes.
+                    </small>
+                </div>
+                <div style="font-size: 0.75rem; color: #aaa; margin-top: 12px;" id="attemptCounter"></div>
+            </div>
+
+            <!-- Success State -->
+            <div class="state" id="stateSuccess">
+                <div class="success-icon"><i class="fas fa-check"></i></div>
+                <div class="state-title" style="font-size:1.2rem; font-weight:700; color:#16a34a;">Payment Successful!</div>
+                <div class="state-sub">Your order has been placed and recorded.</div>
+
+                <div class="order-details" id="successDetails"></div>
+
+                <button class="btn-primary" onclick="goToDashboard()">
+                    <i class="fas fa-home"></i> Back to Dashboard
+                </button>
+                <div class="transaction-id" id="successTxId"></div>
+            </div>
+
+            <!-- Failed State -->
+            <div class="state" id="stateFailed">
+                <div class="failed-icon"><i class="fas fa-times"></i></div>
+                <div class="state-title" id="failedTitle" style="font-size:1.2rem; font-weight:700; color:#dc2626;">Payment Failed</div>
+                <div class="state-sub" id="failedMessage">The payment could not be completed.</div>
+
+                <button class="btn-primary" id="stillCheckingBtn" onclick="stillChecking()" style="display:none; margin-bottom:8px;">
+                    <i class="fas fa-sync-alt"></i> I Approved — Check Again
+                </button>
+                <button class="btn-primary" onclick="retryPayment()">
+                    <i class="fas fa-redo"></i> Try Again
+                </button>
+                <button class="btn-cancel" onclick="goToDashboard()">Back to Dashboard</button>
+            </div>
+
+            <div class="secured-badge">
+                <i class="fas fa-lock"></i> Secured payment
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const params = new URLSearchParams(window.location.search);
+        const transactionId = params.get('transactionId') || localStorage.getItem('paymentTransactionId');
+        const orderData = JSON.parse(localStorage.getItem('pendingOrderData') || '{}');
+
+        // Get base URL for API calls - use current origin or fallback to localhost
+        const getApiUrl = (endpoint) => {
+            // If on a tunnel/production domain, use the same origin
+            if (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+                return `${window.location.origin}${endpoint}`;
+            }
+            // Otherwise use localhost:5000
+            return `http://localhost:5000${endpoint}`;
+        };
+
+        // Test backend connectivity on page load
+        (async () => {
+            try {
+                const testUrl = getApiUrl('/api/test');
+                console.log(`🧪 [Frontend] Testing backend connectivity at: ${testUrl}`);
+                const response = await fetch(testUrl, { method: 'GET' });
+                console.log(`✅ [Frontend] Backend is reachable! Status: ${response.status}`);
+            } catch (err) {
+                console.error(`❌ [Frontend] Backend not reachable!`, err.message);
+                console.error(`   This means fetch requests to ${getApiUrl('')} will fail!`);
+            }
+        })();
+
+        // Fill header
+        const amount = parseFloat(orderData.amount) || 0;
+        document.getElementById('displayAmount').textContent = amount.toFixed(2);
+
+        if (!transactionId) {
+            showState('stateFailed');
+            document.getElementById('failedMessage').textContent = 'No transaction ID found. Please try again.';
+        } else if (params.get('verified') === '1') {
+            // Arriving from OTP page — USSD prompt was sent, auto-start polling
+            console.log('📱 [Frontend] OTP verified, auto-starting payment status polling');
+            showState('stateVerifying');
+            startPolling();
+        }
+
+        function showState(id) {
+            ['stateProcessing', 'stateVerifying', 'stateSuccess', 'stateFailed'].forEach(s => {
+                document.getElementById(s).classList.remove('active');
+            });
+            document.getElementById(id).classList.add('active');
+        }
+
+        // ── Polling config ──────────────────────────────────────────────────────
+        // 20 attempts × 8 s = 160 s total. Korba can take 60-120 s to confirm.
+        // 6 s initial delay gives the gateway time to push the prompt before first check.
+        const MAX_ATTEMPTS   = 20;
+        const POLL_INTERVAL  = 8000;   // ms between checks
+        const INITIAL_DELAY  = 6000;   // ms before very first check
+        // ────────────────────────────────────────────────────────────────────────
+
+        async function handleIPaid() {
+            const btn = document.getElementById('iPaidBtn');
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Checking...';
+            showState('stateVerifying');
+            startPolling();
+        }
+
+        // "I Approved — Check Again" button resets and polls for another full window
+        function stillChecking() {
+            showState('stateVerifying');
+            document.getElementById('verifyingStatus') && (document.getElementById('verifyingStatus').textContent = 'Re-checking with your network...');
+            startPolling();
+        }
+
+        function startPolling() {
+            let attempts = 0;
+            const counterEl  = document.getElementById('attemptCounter');
+            const verifyEl   = document.getElementById('verifyingStatus');
+
+            const statusMsgs = [
+                'Waiting for network confirmation...',
+                'Still checking — MoMo approvals can take 1–2 minutes...',
+                'Contacting your network provider...',
+                'Almost there — please stay on this page...',
+                'Still waiting for your network response...',
+                'Korba is processing your approval...',
+                'Confirming with the payment gateway...',
+            ];
+
+            const check = async () => {
+                attempts++;
+                if (counterEl) counterEl.textContent = `Check ${attempts} of ${MAX_ATTEMPTS}`;
+                if (verifyEl)  verifyEl.textContent  = statusMsgs[Math.min(attempts - 1, statusMsgs.length - 1)];
+
+                console.log(`🔄 [Frontend] Status check attempt ${attempts}/${MAX_ATTEMPTS} for ${transactionId}`);
+
+                try {
+                    const statusUrl = getApiUrl(`/api/payment/status/${transactionId}`);
+                    const res  = await fetch(statusUrl);
+                    const data = await res.json();
+
+                    // Safely extract from response wrapper
+                    const tx     = data.transaction;
+                    const status = (tx && tx.status) || data.status;
+
+                    console.log(`📊 [Frontend] Attempt ${attempts}: status=${status}`);
+
+                    if (status === 'success') {
+                        console.log(`✅ [Frontend] Payment confirmed SUCCESS`);
+
+                        // bundle_size lives in metadata when reconstructing from tx object
+                        const txBundle = tx.bundle_size || tx.metadata?.bundle_size || tx.metadata?.packageName || tx.packageName || '';
+                        const finalOrderData = (orderData && orderData.amount) ? orderData : {
+                            package:     tx.provider    || 'Data Bundle',
+                            bundle_size: txBundle,
+                            packageName: txBundle,
+                            amount:      tx.amount,
+                            beneficiary: tx.phoneNumber,
+                            phoneNumber: tx.phoneNumber
+                        };
+
+                        // Backend now automatically handles recording of Order and Transaction upon payment success.
+                        // We no longer need to call recordOrder() here, which prevents duplicate entries.
+                        // try {
+                        //     await recordOrder(finalOrderData);
+                        // } catch (orderErr) {
+                        //     console.error('Order recording failed, continuing to success screen:', orderErr);
+                        // }
+
+                        localStorage.removeItem('pendingOrderData');
+                        showSuccessState(tx || { transactionId, amount: finalOrderData.amount, phoneNumber: finalOrderData.phoneNumber });
+
+                    } else if (status === 'failed') {
+                        console.log(`❌ [Frontend] Payment confirmed FAILED`);
+                        // Hard failure from gateway — hide "check again" button
+                        const failedTitleEl = document.getElementById('failedTitle');
+                        const stillBtn      = document.getElementById('stillCheckingBtn');
+                        if (failedTitleEl) failedTitleEl.textContent = 'Payment Failed';
+                        if (stillBtn)      stillBtn.style.display = 'none';
+                        showState('stateFailed');
+                        document.getElementById('failedMessage').textContent =
+                            (tx && tx.errorMessage) || 'Payment was declined by your network.';
+
+                    } else {
+                        // Still pending
+                        if (attempts < MAX_ATTEMPTS) {
+                            setTimeout(check, POLL_INTERVAL);
+                        } else {
+                            // Timed out — payment unconfirmed, do NOT record anything
+                            console.log(`⏰ [Frontend] Max attempts (${MAX_ATTEMPTS}) reached — payment unconfirmed`);
+                            const failedTitleEl = document.getElementById('failedTitle');
+                            const stillBtn      = document.getElementById('stillCheckingBtn');
+                            if (failedTitleEl) failedTitleEl.textContent = 'Payment Not Confirmed';
+                            if (stillBtn)      stillBtn.style.display = 'block';
+                            showState('stateFailed');
+                            document.getElementById('failedMessage').textContent =
+                                'We could not confirm your payment after 2½ minutes. If you approved the prompt on your phone, tap "I Approved — Check Again". Otherwise start a new payment.';
+                        }
+                    }
+                } catch (err) {
+                    console.error(`❌ [Frontend] Fetch error on attempt ${attempts}:`, err.message);
+                    if (attempts < MAX_ATTEMPTS) {
+                        setTimeout(check, POLL_INTERVAL);
+                    } else {
+                        const stillBtn = document.getElementById('stillCheckingBtn');
+                        if (stillBtn) stillBtn.style.display = 'block';
+                        showState('stateFailed');
+                        document.getElementById('failedMessage').textContent =
+                            'Could not reach the payment server. Check your internet and tap "I Approved — Check Again" if you completed the payment.';
+                    }
+                }
+            };
+
+            // Give the gateway INITIAL_DELAY before the very first check
+            setTimeout(check, INITIAL_DELAY);
+        }
+
+        async function recordOrder() {
+            try {
+                const storeSlug = orderData.storeSlug || new URLSearchParams(window.location.search).get('store') || '';
+                const clientType = orderData.clientType || 'Customers';
+                const token = localStorage.getItem('token');
+                const headers = { 'Content-Type': 'application/json' };
+                if (token) headers['Authorization'] = `Bearer ${token}`;
+
+                // Record order
+                const orderUrl = getApiUrl('/api/orders');
+                console.log(`📝 [Frontend] Recording order at: ${orderUrl}`);
+                
+                const orderRes = await fetch(orderUrl, {
+                    method: 'POST',
+                    headers,
+                    body: JSON.stringify({
+                        beneficiary: orderData.phoneNumber || orderData.beneficiary,
+                        package: orderData.provider || orderData.package || 'Data Bundle',
+                        bundle_size: orderData.packageName || orderData.bundle_size || '',
+                        amount: parseFloat(orderData.amount),
+                        status: 'processing',
+                        storeSlug,
+                        clientType,
+                        created: new Date().toISOString()
+                    })
+                });
+
+                const order = await orderRes.json();
+                console.log(`✅ [Frontend] Order recorded:`, order);
+
+                // Record transaction
+                const txUrl = getApiUrl('/api/transactions');
+                console.log(`📝 [Frontend] Recording transaction at: ${txUrl}`);
+                
+                fetch(txUrl, {
+                    method: 'POST',
+                    headers,
+                    body: JSON.stringify({
+                        description: `Payment for ${orderData.provider} ${orderData.packageName || ''} - ${orderData.phoneNumber || orderData.beneficiary}`,
+                        amount: parseFloat(orderData.amount),
+                        beneficiary_phone: orderData.phoneNumber || orderData.beneficiary,
+                        method: 'Mobile Money',
+                        status: 'complete',
+                        storeSlug,
+                        clientType,
+                        orderId: order._id || order.id || null
+                    })
+                }).then(res => {
+                    console.log(`✅ [Frontend] Transaction recorded`);
+                }).catch((err) => {
+                    console.error('Transaction recording error:', err);
+                });
+
+                // Clear checkout data
+                localStorage.removeItem('checkoutOrder');
+                localStorage.removeItem('pendingOrderData');
+
+            } catch (err) {
+                console.error('Order recording error:', err);
+            }
+        }
+
+        function showSuccessState(transaction) {
+            showState('stateSuccess');
+
+            const details = document.getElementById('successDetails');
+            details.innerHTML = `
+                <div class="detail-row">
+                    <span class="label">Provider</span>
+                    <span class="value">${orderData.provider || '-'}</span>
+                </div>
+                <div class="detail-row">
+                    <span class="label">Bundle</span>
+                    <span class="value">${orderData.packageName || orderData.bundle_size || '-'}</span>
+                </div>
+                <div class="detail-row">
+                    <span class="label">Phone</span>
+                    <span class="value">${orderData.phoneNumber || orderData.beneficiary || '-'}</span>
+                </div>
+                <div class="detail-row">
+                    <span class="label">Amount</span>
+                    <span class="value">GH₵${parseFloat(orderData.amount || 0).toFixed(2)}</span>
+                </div>
+                <div class="detail-row">
+                    <span class="label">Status</span>
+                    <span class="value" style="color:#16a34a;">Processing</span>
+                </div>
+            `;
+
+            document.getElementById('successTxId').textContent = `Transaction ID: ${transactionId}`;
+        }
+
+        function handleCancel() {
+            if (confirm('Are you sure you want to cancel this payment?')) {
+                localStorage.removeItem('checkoutOrder');
+                localStorage.removeItem('pendingOrderData');
+                goToDashboard();
+            }
+        }
+
+        function retryPayment() {
+            window.history.back();
+        }
+
+        function goToDashboard() {
+            const slug = orderData.storeSlug || '';
+            const clientType = orderData.clientType || 'Customers';
+            window.location.href = `./dashboard2.html${slug ? `?store=${slug}&client=${clientType}` : ''}`;
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MTN AFA Registration</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="mtn_afa.css">
+</head>
+<body>
+    <!-- Sidebar Overlay -->
+    <div class="overlay" id="overlay"></div>
+    
+    <!-- Sidebar Navigation -->
+    <div class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+            <button class="close-btn" id="closeBtn">
+                <i class="fas fa-times"></i>
+            </button>
+            <div class="sidebar-title" id="sidebarTitle"></div>
+            <div class="brand-logo" id="sidebarLogo"></div>
+        </div>
+        <ul class="menu">
+            <!-- Dashboard -->
+            <a href="#" class="menu-item active" id="dashboardMenuLink">
+                <i class="fas fa-tachometer-alt"></i>
+                <span class="menu-text">Dashboard</span>
+            </a>
+            
+            <a href="../Orders/new_orders.html" class="menu-item">
+                <i class="fas fa-shopping-cart"></i>
+                <span class="menu-text">Orders</span>
+            </a>
+
+            <a href="../Transactions/transactions2.html" class="menu-item">
+                <i class="fas fa-exchange-alt"></i>
+                <span class="menu-text">Transactions</span>
+            </a>
+        </ul>
+    </div>
+    
+    <!-- Notification -->
+    <div class="notification" id="notification">
+        <div class="notification-icon">
+            <i class="fas fa-check"></i>
+        </div>
+        <div class="notification-content">
+            <div class="notification-title">Registration Successful!</div>
+            <div class="notification-message">Your MTN AFA registration has been submitted successfully.</div>
+        </div>
+        <button class="notification-close" id="notificationClose">
+            <i class="fas fa-times"></i>
+        </button>
+    </div>
+
+    <div class="container">
+        <!-- Benefits Section -->
+        <div class="benefits-container">
+            <h2 class="benefits-title">MTN AFA Package</h2>
+            
+            <h3 style="margin-bottom: 15px; color: #000;">Key Benefits</h3>
+            <ul class="benefits-list">
+                <li>
+                    <i class="fas fa-check-circle benefit-icon"></i>
+                    <span class="benefit-text">One-time lifetime registration</span>
+                </li>
+                <li>
+                    <i class="fas fa-check-circle benefit-icon"></i>
+                    <span class="benefit-text">220 call minutes + 50 SMS (MTN offer)</span>
+                </li>
+                <li>
+                    <i class="fas fa-check-circle benefit-icon"></i>
+                    <span class="benefit-text">Free unlimited group calls</span>
+                </li>
+                <li>
+                    <i class="fas fa-check-circle benefit-icon"></i>
+                    <span class="benefit-text">Renew anytime via *1848#</span>
+                </li>
+                <li>
+                    <i class="fas fa-check-circle benefit-icon"></i>
+                    <span class="benefit-text">Paid via Mobile Money</span>
+                </li>
+            </ul>
+            
+            <div class="activation-steps">
+                <h3 class="activation-title">How to Activate After Approval</h3>
+                <ol class="steps-list">
+                    <li>Dial *1848#</li>
+                    <li>Select 1: Buy AFA Bundle</li>
+                    <li>Choose AFA or AFA+Data</li>
+                    <li>Confirm & enter MoMo PIN</li>
+                    <li>Receive SMS from MTN & MoMo</li>
+                    <li>Enjoy your package!</li>
+                </ol>
+            </div>
+        </div>
+        
+        <!-- Registration Form Section -->
+        <div class="form-container">
+            <button class="menu-btn" id="menuBtn">
+                <i class="fas fa-bars"></i>
+            </button>
+            
+            <!-- Header Container with Logo and Package Info -->
+            <div class="header-container">
+                <div class="mtn-logo">
+                    <!-- MTN logo placeholder -->
+                    <img src="MTN-PR-15.png" alt="MTN Logo">
+                </div>
+                <div class="header-content">
+                    <div class="logo-text">MTN</div>  
+                    <h1>AFA Registration</h1>
+                    <p>Join the MTN AFA community today</p>
+                </div>
+            </div>
+            
+            <div class="card">
+                <div class="card-header">
+                    <h2>Registration Form</h2>
+                    <div class="fee" id="registrationFee">Registration Fee: 15 GHS</div>
+                </div>
+                
+                <div class="card-body">
+                    <form id="registrationForm">
+                        <div class="form-group">
+                            <label for="fullname">Full Name</label>
+                            <div class="input-group">
+                                <i class="fas fa-user input-icon"></i>
+                                <input type="text" id="fullname" placeholder="Jude Dodoo" required>
+                            </div>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="phone">MTN Phone Number</label>
+                            <div class="input-group">
+                                <i class="fas fa-phone input-icon"></i>
+                                <input type="tel" id="phone" placeholder="053000000" required>
+                            </div>
+                        </div>
+                        
+                        <!-- Ported number checkbox - BIGGER and better styled -->
+                        <div class="ported-checkbox" id="portedCheckboxContainer">
+                            <input type="checkbox" id="portedNumber" name="portedNumber">
+                            <div class="checkbox-content">
+                                <label for="portedNumber">
+                                    This is a ported number (from another network)
+                                </label>
+                                <small id="portedNumberHint">
+                                    Check if your number was originally from another network
+                                </small>
+                            </div>
+                        </div>
+                        
+                        <!-- Network detection display -->
+                        <div id="networkDisplay" class="network-hint"></div>
+                        
+                        <!-- Error will be inserted here automatically by JavaScript -->
+
+                        <div class="form-group">
+                            <label for="location">Specific Location</label>
+                            <div class="input-group">
+                                <i class="fas fa-map-marker-alt input-icon"></i>
+                                <input type="text" id="location" placeholder="Enter your location" required>
+                            </div>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="region">Region</label>
+                            <div class="input-group">
+                                <i class="fas fa-globe-africa input-icon"></i>
+                                <select id="region" required>
+                                    <option value="" disabled selected>Select your region</option>
+                                    <option value="Greater Accra">Greater Accra</option>
+                                    <option value="Ashanti">Ashanti</option>
+                                    <option value="Western">Western</option>
+                                    <option value="Western North">Western North</option>
+                                    <option value="Eastern">Eastern</option>
+                                    <option value="Central">Central</option>
+                                    <option value="Volta">Volta</option>
+                                    <option value="Oti">Oti</option>
+                                    <option value="Northern">Northern</option>
+                                    <option value="Upper East">Upper East</option>
+                                    <option value="Upper West">Upper West</option>
+                                    <option value="Ahafo">Ahafo</option>
+                                    <option value="North East">North East</option>
+                                    <option value="Savannah">Savannah</option>
+                                    <option value="Bono">Bono</option>
+                                    <option value="Bono East">Bono East</option>
+                                </select>
+                            </div>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="ghanaCard">Ghana Card ID</label>
+                            <div class="input-group">
+                                <i class="fas fa-id-card input-icon"></i>
+                                <input type="text" id="ghanaCard" placeholder="GHA-123456789-0" required>
+                            </div>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="dob">Date of Birth</label>
+                            <div class="input-group">
+                                <i class="fas fa-calendar-alt input-icon"></i>
+                                <input type="date" id="dob" required>
+                            </div>
+                        </div>
+                        
+                        <button type="submit" class="submit-btn">
+                            <i class="fas fa-paper-plane"></i>
+                            Submit Registration
+                        </button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="../price-loader.js"></script>
+    <script src="../order-submit.js"></script>
+    <script src="./mtn_afa.js"></script>
+    <script src="../storefront-inject.js"></script>
+    <script src="../storefront-prices.js"></script>
+</body>
+</html>

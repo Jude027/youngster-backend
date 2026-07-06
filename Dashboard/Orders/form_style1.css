@@ -1,0 +1,137 @@
+section {
+    font-family: Quicksand;
+    text-align: center;
+    margin-top: 60px;
+}
+.form-titles {
+    font-weight: 100;
+    font-size: 4em;
+    padding: 0 10px;
+}
+.auth-forms {
+    border: none;
+    border-radius: 13px;
+    width: 80%;
+    max-width: 330px;
+    padding: 35px 0;
+    box-shadow: 0px 0px 5px 1px #5252527a;
+	margin-bottom: 50px;
+}
+.auth-forms label {
+    font-weight: 900;
+    display: block;
+    width: initial;
+    padding: 0 15px;
+    line-height: 0;
+    text-align: left;
+}
+.auth-forms button {
+    position: relative;
+    width: calc(85% + 18px); /* total width of input fields */
+    height: 45px;
+    margin-top: 15px;
+    font-size: 1.3em;
+    border-radius: 5px;
+    background-color: black;
+    color: white;
+    font-weight: 300;
+    border: none;
+    transition: 0.2s all linear;
+    overflow: hidden;
+}
+.auth-forms button:hover {
+    background-color: white;
+    color: black;
+    box-shadow: 0px 0px 5px 1px #afafaf;
+    transform: scale(1.07);
+}
+.auth-forms input, 
+.auth-forms textarea {
+    width: 85%;
+    height: 40px;
+    padding: 0 8px;
+    border: 1px solid rgb(0, 0, 0);
+    border-radius: 4px;
+    font-size: 16px;
+    background-color: #ffffff42;
+    margin-bottom: 30px;
+}
+.auth-forms textarea {
+    height: 80px;
+    resize: vertical;
+    font-family: inherit;
+}
+.complete-reg-dd-mm {
+    padding: 0;
+}
+.auth-forms hr {
+	width: 90%;
+	margin: 20px 0;
+	border: 1px solid rgb(0, 0, 0);
+}
+:focus {
+	outline: none;
+}
+:focus::placeholder {
+    opacity: 20%;
+}
+/* Validation Errors */
+.validation_error_message {
+    width: 80%;
+    padding: 10px 0;
+}
+.validation_error_message span{
+    color: red;
+    font-size: small;
+}
+.password_requirement {
+    color: green;
+    text-align: left;
+    font-size: small;
+    margin-top: 7px;
+    margin-bottom: 12px;
+}
+.hide {
+    display: none;
+}
+.report-img input {
+    border: none;
+}
+
+/* Don't have an acc */
+.dont-have-an-acc {
+    margin-top: 10px;
+}
+.dont-have-an-acc a, 
+.forgotpassword a {
+    color: black;
+    font-size: 1.2em;
+    font-weight: lighter;
+    text-decoration: none;
+}
+.dont-have-an-acc a:hover, 
+.forgotpassword a:hover {
+    text-decoration: underline;
+}
+.forgotpassword {
+    text-align: center;
+    margin-top: 20px;
+}
+
+/* FOR SMALL SCREENS */
+@media screen and (max-width: 480px) {
+    .form-titles {
+        font-size: 3em;
+    }
+    .auth-forms {
+        width: 90%;
+        box-shadow: none;
+        background-color: none;
+        backdrop-filter: none;
+    }
+}
+@media screen and (max-width: 300px) {
+    .form-titles {
+        font-size: 2.5em;
+    }
+}

@@ -1,0 +1,129 @@
+/* generic-package.css
+   Mirrors telecel.css / mtn.css structure exactly.
+   Header colour + accent are driven by CSS variables set by generic-package.js
+   from the base-price config saved in the admin panel.                        */
+
+* { margin:0; padding:0; box-sizing:border-box; font-family:'Segoe UI',Tahoma,Geneva,Verdana,sans-serif; }
+
+:root {
+    /* Defaults — overridden at runtime by JS from base-price config */
+    --accent-color:    #6a11cb;
+    --accent-gradient: linear-gradient(135deg,#6a11cb 0%,#2575fc 100%);
+    --header-bg:       linear-gradient(135deg,#6a11cb 0%,#2575fc 100%);
+    --sidebar-bg:      linear-gradient(180deg,#2c3e50 0%,#3498db 100%);
+    --bg-primary:      #f5f7fa;
+    --bg-secondary:    white;
+    --text-primary:    #333;
+    --text-secondary:  #777;
+    --card-shadow:     0 10px 30px rgba(0,0,0,0.08);
+    --border-color:    #e0e0e0;
+}
+
+[data-theme="dark"] {
+    --bg-primary:   #1a1a2e;
+    --bg-secondary: #2d3748;
+    --text-primary: #e2e8f0;
+    --text-secondary:#a0aec0;
+    --card-shadow:  0 10px 30px rgba(0,0,0,0.3);
+    --border-color: #4a5568;
+}
+
+body { background-color:var(--bg-primary); color:var(--text-primary); line-height:1.6; padding:20px; min-height:100vh; display:flex; justify-content:center; align-items:center; transition:all 0.3s ease; }
+body.sidebar-open { margin-left:250px; }
+
+.container { max-width:600px; width:100%; background:var(--bg-secondary); border-radius:16px; box-shadow:var(--card-shadow); overflow:hidden; position:relative; }
+
+.header { background:var(--header-bg); color:white; padding:25px 30px; text-align:center; position:relative; }
+.header h1 { font-size:24px; font-weight:700; margin-bottom:8px; }
+.header p  { font-size:14px; opacity:0.9; }
+
+.menu-btn { position:absolute; left:20px; top:50%; transform:translateY(-50%); background:rgba(255,255,255,0.2); border:none; color:white; padding:12px; border-radius:8px; cursor:pointer; display:flex; align-items:center; justify-content:center; font-size:16px; transition:all 0.3s ease; width:44px; height:44px; z-index:10; }
+.menu-btn:hover { background:rgba(255,255,255,0.3); }
+
+.content { padding:30px; }
+
+.note-box { background-color:#fff9e6; border-left:4px solid var(--accent-color); padding:16px; margin-bottom:25px; border-radius:0 8px 8px 0; }
+.note-box p { font-size:14px; color:#8a6d3b; }
+
+.form-group { margin-bottom:22px; }
+
+label { display:block; margin-bottom:8px; font-weight:600; color:var(--text-primary); }
+
+.input-group { position:relative; }
+.input-group i { position:absolute; left:15px; top:16px; color:var(--text-secondary); }
+
+input, select { width:100%; padding:14px 14px 14px 45px; border:1px solid var(--border-color); border-radius:8px; font-size:16px; transition:all 0.3s; appearance:none; background-color:var(--bg-secondary); color:var(--text-primary); }
+select { padding-right:40px; cursor:pointer; }
+
+.select-wrapper { position:relative; }
+.select-wrapper::after { content:'\f078'; font-family:'Font Awesome 5 Free'; font-weight:900; position:absolute; right:15px; top:50%; transform:translateY(-50%); color:var(--accent-color); pointer-events:none; }
+
+input:focus, select:focus { outline:none; border-color:var(--accent-color); box-shadow:0 0 0 3px rgba(106,17,203,0.15); }
+
+/* Ported checkbox */
+.ported-checkbox-container { margin-top:15px; }
+.ported-checkbox { display:flex; align-items:center; gap:12px; cursor:pointer; padding:12px 15px; background-color:white; border-radius:8px; transition:all 0.3s; user-select:none; border:1px solid var(--border-color); }
+[data-theme="dark"] .ported-checkbox { background-color:#2d3748; }
+.ported-checkbox:hover { border-color:var(--accent-color); }
+.ported-checkbox input[type="checkbox"] { display:none; }
+.custom-checkbox { width:24px; height:24px; border:2px solid #ccc; border-radius:4px; display:flex; align-items:center; justify-content:center; transition:all 0.3s ease; background-color:white; flex-shrink:0; cursor:pointer; }
+[data-theme="dark"] .custom-checkbox { background-color:#2d3748; border-color:#4a5568; }
+.checkmark { color:transparent; font-size:14px; transition:all 0.3s ease; transform:scale(0); }
+.ported-checkbox input[type="checkbox"]:checked + .custom-checkbox { border-color:#4CAF50; background-color:#4CAF50; }
+.ported-checkbox input[type="checkbox"]:checked + .custom-checkbox .checkmark { color:white; transform:scale(1); }
+.ported-checkbox input[type="checkbox"]:checked ~ label { color:var(--accent-color); }
+.ported-checkbox label { margin:0; font-weight:500; color:#333; cursor:pointer; font-size:14px; line-height:1.4; flex:1; }
+[data-theme="dark"] .ported-checkbox label { color:#e2e8f0; }
+
+/* Valid prefixes */
+.format-hint { margin-top:10px; font-size:13px; color:var(--text-secondary); }
+.valid-prefixes { display:inline-block; background-color:#ffe6e6; padding:2px 8px; border-radius:4px; font-family:monospace; color:var(--accent-color); }
+[data-theme="dark"] .valid-prefixes { background-color:#3d2b2b; }
+
+/* Bundle details */
+.bundle-details { margin-top:15px; padding:15px; background-color:var(--bg-primary); border-radius:8px; display:none; }
+.bundle-details.active { display:block; }
+.bundle-details p { margin-bottom:8px; display:flex; justify-content:space-between; }
+.bundle-details .label { font-weight:600; color:var(--text-primary); }
+.bundle-details .value { color:var(--accent-color); font-weight:600; }
+
+/* Order button */
+.order-btn { background:var(--accent-gradient); color:white; border:none; border-radius:8px; padding:16px; font-size:18px; font-weight:700; width:100%; cursor:pointer; transition:all 0.3s; margin-top:10px; }
+.order-btn:hover { transform:translateY(-2px); box-shadow:0 5px 15px rgba(106,17,203,0.3); }
+.order-btn:active { transform:translateY(0); }
+
+.delivery-info { margin-top:25px; text-align:center; color:var(--text-secondary); font-size:14px; padding:15px; border-top:1px solid var(--border-color); display:flex; justify-content:center; gap:25px; flex-wrap:wrap; }
+.delivery-info p { display:flex; align-items:center; gap:8px; }
+.delivery-info i { color:var(--accent-color); }
+
+/* Sidebar */
+.overlay { position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:999; display:none; }
+.overlay.open { display:block; }
+.sidebar { position:fixed; left:-260px; top:0; width:250px; height:100vh; background:var(--sidebar-bg); z-index:1000; transition:left 0.3s ease; overflow-y:auto; }
+.sidebar.open { left:0; }
+.sidebar-header { padding:20px; border-bottom:1px solid rgba(255,255,255,0.1); }
+.close-btn { background:rgba(255,255,255,0.2); border:none; color:white; width:36px; height:36px; border-radius:8px; cursor:pointer; font-size:16px; display:flex; align-items:center; justify-content:center; margin-bottom:15px; }
+.sidebar-title { color:white; font-size:16px; font-weight:700; margin-bottom:10px; }
+.brand-logo { width:60px; height:60px; border-radius:8px; overflow:hidden; background:rgba(255,255,255,0.1); display:flex; align-items:center; justify-content:center; }
+.menu { list-style:none; padding:15px 0; }
+.menu-item { display:flex; align-items:center; gap:12px; padding:14px 20px; color:rgba(255,255,255,0.8); text-decoration:none; transition:all 0.3s; font-size:14px; font-weight:500; cursor:pointer; }
+.menu-item:hover, .menu-item.active { background:rgba(255,255,255,0.15); color:white; border-right:3px solid white; }
+.menu-item i { width:20px; text-align:center; }
+
+/* Notification */
+.notification { position:fixed; top:20px; right:20px; background:white; border-radius:8px; padding:16px 20px; box-shadow:0 5px 15px rgba(0,0,0,0.2); display:flex; align-items:center; gap:12px; z-index:1100; transform:translateX(150%); transition:transform 0.4s ease; border-left:4px solid #4CAF50; }
+.notification.show { transform:translateX(0); }
+.notification-icon { width:40px; height:40px; background:#4CAF50; border-radius:50%; display:flex; align-items:center; justify-content:center; color:white; font-size:18px; }
+.notification-content { flex:1; }
+.notification-title { font-weight:600; color:#333; margin-bottom:4px; }
+.notification-message { color:#666; font-size:14px; }
+.notification-close { background:none; border:none; color:#999; cursor:pointer; font-size:16px; padding:4px; border-radius:4px; }
+.notification-close:hover { color:#666; background:#f5f5f5; }
+
+@media (max-width:480px) {
+    .container { border-radius:12px; }
+    .header { padding:20px; }
+    .content { padding:20px; }
+    .notification { right:10px; left:10px; transform:translateY(-150%); }
+    .notification.show { transform:translateY(0); }
+}

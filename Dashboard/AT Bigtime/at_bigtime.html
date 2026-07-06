@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Purchase AT Bundle</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="at_bigtime.css">
+
+</head>
+<body>
+    <!-- Sidebar Overlay -->
+    <div class="overlay" id="overlay"></div>
+    
+    <!-- Sidebar Navigation -->
+    <div class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+            <button class="close-btn" id="closeBtn">
+                <i class="fas fa-times"></i>
+            </button>
+            <div class="sidebar-title" id="sidebarTitle"></div>
+            <div class="brand-logo" id="sidebarLogo"></div>
+        </div>
+        <ul class="menu">
+            <!-- Dashboard -->
+            <a href="#" class="menu-item active" id="dashboardMenuLink">
+                <i class="fas fa-tachometer-alt"></i>
+                <span class="menu-text">Dashboard</span>
+            </a>
+            
+            <!-- Orders -->
+            <a href="../Orders/new_orders.html" class="menu-item">
+                <i class="fas fa-shopping-cart"></i>
+                <span class="menu-text">Orders</span>
+            </a>
+
+              <!-- Transactions -->
+            <a href="../Transactions/transactions2.html" class="menu-item">
+                <i class="fas fa-exchange-alt"></i>
+                <span class="menu-text">Transactions</span>
+            </a>
+        </ul>
+    </div>
+    
+    <!-- Notification -->
+    <div class="notification" id="notification">
+        <div class="notification-icon">
+            <i class="fas fa-check"></i>
+        </div>
+        <div class="notification-content">
+            <div class="notification-title">Success!</div>
+            <div class="notification-message">Your Order has been placed successfully</div>
+        </div>
+        <button class="notification-close" id="notificationClose">
+            <i class="fas fa-times"></i>
+        </button>
+    </div>
+    
+    <div class="container">
+        <div class="header">
+            <button class="menu-btn" id="menuBtn">
+                <i class="fas fa-bars"></i>
+            </button>
+            <div class="at-logo">
+                <!-- AT logo placeholder -->
+                <div style="width: 60px; height: 60px; background: var(--accent-gradient); border-radius: 50%; display: flex; align-items: center; justify-content: center; color: white; font-weight: bold; margin: 0 auto;">AT</div>
+            </div>
+            <h1>Purchase AT Bigtime Bundle</h1>
+            <p>Fast and reliable data bundles</p>
+        </div>
+        
+        <div class="content">
+            <div class="note-box">
+                <p><i class="fas fa-exclamation-circle"></i> This package can take 20 to 40 minutes to be delivered. Please verify the phone number to avoid sending data to a wrong number.</p>
+            </div>
+            
+            <div class="form-group">
+                <label for="phone">Phone Number</label>
+                <div class="input-group">
+                    <i class="fas fa-mobile-alt"></i>
+                    <input type="tel" id="phone" placeholder="Enter AT phone number " pattern="[0-9]*" inputmode="numeric">
+                </div>
+                
+                <!-- Ported Network Checkbox -->
+                <div class="ported-checkbox-container">
+                    <div class="ported-checkbox" id="portedCheckbox">
+                        <input type="checkbox" id="portedNetwork">
+                        <div class="custom-checkbox" id="customCheckbox">
+                            <i class="fas fa-check checkmark"></i>
+                        </div>
+                        <label for="portedNetwork">Tick ✅ if the number you're trying to order for has been ported to a different network</label>
+                    </div>
+                </div>
+                
+                <div class="format-hint">
+                    Valid AT prefixes: <span class="valid-prefixes">026, 056, 027, 057, 023</span>
+                </div>
+            </div>
+            
+            <div class="form-group">
+                <label for="bundle">Select Bundle</label>
+                <div class="select-wrapper">
+                    <i class="fas fa-database" style="position: absolute; left: 15px; top: 50%; transform: translateY(-50%); z-index: 1; color: #777;"></i>
+                    <select id="bundle">
+                        <option value="">Choose a data bundle</option>
+                    </select>
+                </div>
+                
+                <!-- Bundle details that appear when a bundle is selected -->
+                <div class="bundle-details" id="bundleDetails">
+                    <p>
+                        <span class="label">Bundle Size:</span>
+                        <span class="value" id="bundleSize">-</span>
+                    </p>
+                    <p>
+                        <span class="label">Price:</span>
+                        <span class="value" id="bundlePrice">-</span>
+                    </p>
+                    <p>
+                        <span class="label">Validity:</span>
+                        <span class="value" id="bundleValidity">-</span>
+                    </p>
+                    <p>
+                        <span class="label">Network:</span>
+                        <span class="value" id="bundleNetwork">-</span>
+                    </p>
+                    <!-- NEW: Number Type row -->
+                    <p>
+                        <span class="label">Number Type:</span>
+                        <span class="value" id="numberType">Normal</span>
+                    </p>
+                </div>
+            </div>
+            
+            <button class="order-btn" id="purchaseBundle">
+                <i class="fas fa-shopping-cart"></i> Purchase Bundle
+            </button>
+            
+            <div class="delivery-info">
+                <p><i class="fas fa-clock"></i> Delivery is within 20-40 minutes</p>
+                <p><i class="fas fa-shield-alt"></i> Secure payment</p>
+            </div>
+        </div>
+    </div>
+
+    <script src="../price-loader.js"></script>
+    <script src="../order-submit.js"></script>
+    <script src="at_bigtime.js"></script>
+    <script src="../storefront-inject.js"></script>
+    <script src="../storefront-prices.js"></script>
+</body>
+</html>
