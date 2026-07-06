@@ -68,13 +68,32 @@ app.use(cors({
     origin: (origin, callback) => {
         // Allow: localhost, 127.0.0.1, any trycloudflare tunnel, and LAN IPs
         if (!origin) return callback(null, true);
-        const allowed =
-            origin.includes('localhost') ||
-            origin.includes('127.0.0.1') ||
-            origin.includes('trycloudflare.com') ||
-            origin.includes('xpresportal.app') ||
-            /^http:\/\/172\.\d+\.\d+\.\d+(:\d+)?$/.test(origin) ||
-            /^http:\/\/192\.168\.\d+\.\d+(:\d+)?$/.test(origin);
+        const allowedOrigins = [
+          'https://youngster-frontend-production.up.railway.app',
+          'https://xpresportal.app'
+        ];
+        
+        app.use(cors({
+          origin(origin, callback) {
+            if (!origin) return callback(null, true);
+        
+            if (
+              allowedOrigins.includes(origin) ||
+              origin.includes('localhost') ||
+              origin.includes('127.0.0.1') ||
+              origin.includes('trycloudflare.com') ||
+              /^http:\/\/172\.\d+\.\d+\.\d+(:\d+)?$/.test(origin) ||
+              /^http:\/\/192\.168\.\d+\.\d+(:\d+)?$/.test(origin)
+            ) {
+              return callback(null, true);
+            }
+        
+            return callback(new Error('CORS not allowed'));
+          },
+          credentials: true,
+          methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+          allowedHeaders: ['Content-Type', 'Authorization']
+        }));
         if (allowed) {
             callback(null, true);
         } else {
