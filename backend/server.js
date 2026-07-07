@@ -2364,6 +2364,58 @@ app.post('/api/payment/initiate', async (req, res) => {
         res.status(500).json({ message: err.message });
     }
 });
+// Verify a beneficiary (recipient) phone number with DataHub before allowing purchase
+// Keeps the DataHub API key server-side — never exposed to the browser.
+app.post('/api/payment/verify-beneficiary', async (req, res) => {
+    try {
+        const { phone, is_ported_number, isPortedNumber } = req.body;
+        const resolvedIsPorted = (is_ported_number !== undefined) ? is_ported_number
+            : (isPortedNumber !== undefined ? isPortedNumber : true);
+
+        if (!phone) {
+            return res.status(400).json({ success: false, message: 'phone is required' });
+        }
+
+        const provider = await Provider.findOne({
+            name: { $in: ['DataHub', 'MTN', 'datahub'] }
+        });
+        const apiKey = provider?.apiKey || process.env.DATAHUB_API_KEY;
+
+        if (!apiKey) {
+            console.error('[VerifyBeneficiary] No DataHub API key configured (Provider.apiKey or DATAHUB_API_KEY)');
+            return res.status(500).json({ success: false, message: 'Verification service is not configured' });
+        }
+
+        const dataHubResponse = await fetch('https://user.datahubgh.com/api/external/purchases/verify-number', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-API-Key': apiKey
+            },
+            body: JSON.stringify({
+                phone,
+                is_ported_number: resolvedIsPorted
+            })
+        });
+
+        const result = await dataHubResponse.json();
+
+        if (!dataHubResponse.ok) {
+            console.log('[VerifyBeneficiary] Verification failed:', result?.message || result?.error);
+            return res.status(dataHubResponse.status).json({
+                success: false,
+                message: result?.message || result?.error || 'Number could not be verified'
+            });
+        }
+
+        console.log('[VerifyBeneficiary] Phone number verified successfully:', phone);
+        return res.json({ success: true, ...result });
+    } catch (err) {
+        console.error('[VerifyBeneficiary] Verification request failed:', err.message);
+        res.status(500).json({ success: false, message: 'Verification service unavailable, please try again' });
+    }
+});
+
 // Verify OTP for Moolre payment (called when Moolre returns TP14 on initiation)
 app.post('/api/payment/verify-otp', async (req, res) => {
     try {
