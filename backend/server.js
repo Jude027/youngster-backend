@@ -15,7 +15,7 @@ const path = require('path');
 const util = require('util');
 
 // Load models
-const User = require('./models/User');a
+const User = require('./models/User');
 const Order = require('./models/Order');
 const Transaction = require('./models/Transaction');
 const ReferralPrice = require('./models/ReferralPrice');
