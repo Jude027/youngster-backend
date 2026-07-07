@@ -2379,18 +2379,31 @@ app.post('/api/payment/verify-beneficiary', async (req, res) => {
         const provider = await Provider.findOne({
             name: { $in: ['DataHub', 'MTN', 'datahub'] }
         });
-        const apiKey = provider?.apiKey || process.env.DATAHUB_API_KEY;
+
+        // The key lives in the Provider API Config screen's "Auth Header Value" field,
+        // stored on provider.apiConfig.authHeaderValue. Check a few likely field names
+        // for resilience, then fall back to an env var.
+        const apiKey = provider?.apiConfig?.authHeaderValue
+            || provider?.apiConfig?.apiKey
+            || provider?.apiConfig?.token
+            || provider?.apiKey
+            || process.env.DATAHUB_API_KEY;
 
         if (!apiKey) {
-            console.error('[VerifyBeneficiary] No DataHub API key configured (Provider.apiKey or DATAHUB_API_KEY)');
+            console.error('[VerifyBeneficiary] No DataHub API key found on Provider.apiConfig.authHeaderValue or DATAHUB_API_KEY');
             return res.status(500).json({ success: false, message: 'Verification service is not configured' });
         }
+
+        console.log('[VerifyBeneficiary] Using key from:', provider?.apiConfig?.authHeaderValue ? `Provider(${provider.name}).apiConfig.authHeaderValue` : 'DATAHUB_API_KEY env var',
+            '| key preview:', `${String(apiKey).slice(0, 4)}...${String(apiKey).slice(-2)}`);
+
+        const authHeaderName = provider?.apiConfig?.authHeaderName || 'X-API-Key';
 
         const dataHubResponse = await fetch('https://user.datahubgh.com/api/external/purchases/verify-number', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                'X-API-Key': apiKey
+                [authHeaderName]: apiKey
             },
             body: JSON.stringify({
                 phone,
