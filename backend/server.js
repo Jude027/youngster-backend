@@ -2376,56 +2376,59 @@ app.post('/api/payment/verify-beneficiary', async (req, res) => {
             return res.status(400).json({ success: false, message: 'phone is required' });
         }
 
+        // ── Resolve provider document ─────────────────────────────────────────
         const provider = await Provider.findOne({
             name: { $in: ['DataHub', 'MTN', 'datahub'] }
         });
 
-        // The key lives in the Provider API Config screen's "Auth Header Value" field,
-        // stored on provider.apiConfig.authHeaderValue. Check a few likely field names
-        // for resilience, then fall back to an env var.
+        console.log('[VerifyBeneficiary] Provider found:', provider ? provider.name : 'NONE');
+        if (provider) {
+            console.log('[VerifyBeneficiary] apiConfig keys:', Object.keys(provider.apiConfig || {}));
+            console.log('[VerifyBeneficiary] full apiConfig:', JSON.stringify(provider.apiConfig || {}));
+        }
+
+        // Try every field name the admin form might store the key under
         const apiKey = provider?.apiConfig?.authHeaderValue
             || provider?.apiConfig?.apiKey
             || provider?.apiConfig?.token
+            || provider?.apiConfig?.clientKey
+            || provider?.apiConfig?.secretKey
+            || provider?.apiConfig?.key
+            || provider?.apiConfig?.['api-key']
             || provider?.apiKey
             || process.env.DATAHUB_API_KEY;
 
         if (!apiKey) {
-            console.error('[VerifyBeneficiary] No DataHub API key found on Provider.apiConfig.authHeaderValue or DATAHUB_API_KEY');
-            return res.status(500).json({ success: false, message: 'Verification service is not configured' });
+            console.error('[VerifyBeneficiary] No API key found. apiConfig was:', JSON.stringify(provider?.apiConfig));
+            return res.status(500).json({ success: false, message: 'Verification service is not configured — API key missing' });
         }
 
-        console.log('[VerifyBeneficiary] Using key from:', provider?.apiConfig?.authHeaderValue ? `Provider(${provider.name}).apiConfig.authHeaderValue` : 'DATAHUB_API_KEY env var',
-            '| key preview:', `${String(apiKey).slice(0, 4)}...${String(apiKey).slice(-2)}`);
-
-        const authHeaderName = provider?.apiConfig?.authHeaderName || 'X-API-Key';
+        console.log('[VerifyBeneficiary] Key resolved, preview:', `${String(apiKey).slice(0,4)}...${String(apiKey).slice(-2)}`);
 
         const dataHubResponse = await fetch('https://user.datahubgh.com/api/external/purchases/verify-number', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                [authHeaderName]: apiKey
+                'X-API-Key': apiKey
             },
-            body: JSON.stringify({
-                phone,
-                is_ported_number: resolvedIsPorted
-            })
+            body: JSON.stringify({ phone, is_ported_number: resolvedIsPorted })
         });
 
+        console.log('[VerifyBeneficiary] DataHub HTTP status:', dataHubResponse.status);
         const result = await dataHubResponse.json();
+        console.log('[VerifyBeneficiary] DataHub response:', JSON.stringify(result));
 
         if (!dataHubResponse.ok) {
-            console.log('[VerifyBeneficiary] Verification failed:', result?.message || result?.error);
             return res.status(dataHubResponse.status).json({
                 success: false,
                 message: result?.message || result?.error || 'Number could not be verified'
             });
         }
 
-        console.log('[VerifyBeneficiary] Phone number verified successfully:', phone);
         return res.json({ success: true, ...result });
     } catch (err) {
-        console.error('[VerifyBeneficiary] Verification request failed:', err.message);
-        res.status(500).json({ success: false, message: 'Verification service unavailable, please try again' });
+        console.error('[VerifyBeneficiary] CAUGHT ERROR:', err.message, err.stack);
+        res.status(500).json({ success: false, message: 'Could not verify this number right now. Please try again.' });
     }
 });
 
