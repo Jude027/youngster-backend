@@ -2438,6 +2438,61 @@ app.post('/api/payment/verify-beneficiary', async (req, res) => {
     }
 });
 
+// Resend OTP for an existing Moolre transaction.
+// Re-calls the initiate endpoint (no otpcode) which makes Moolre fire a new SMS.
+app.post('/api/payment/resend-otp', async (req, res) => {
+    try {
+        const { transactionId } = req.body;
+        if (!transactionId) {
+            return res.status(400).json({ success: false, message: 'transactionId is required' });
+        }
+
+        const transaction = await PaymentTransaction.findOne({ transactionId });
+        if (!transaction) {
+            return res.status(404).json({ success: false, message: 'Transaction not found' });
+        }
+
+        // Only allow resend while the transaction is still in-flight
+        if (transaction.status === 'success' || transaction.status === 'failed') {
+            return res.status(400).json({
+                success: false,
+                message: `Cannot resend OTP — transaction is already ${transaction.status}`
+            });
+        }
+
+        const gateway = await PaymentGateway.findOne({
+            name: transaction.paymentGateway,
+            enabled: true
+        });
+        if (!gateway) {
+            return res.status(404).json({ success: false, message: 'Payment gateway not found' });
+        }
+
+        // Re-initiate without otpcode — Moolre will send a fresh OTP SMS
+        const result = await PaymentService.processMoolreCollection(
+            gateway,
+            {
+                phoneNumber: transaction.phoneNumber,
+                provider:    transaction.provider,
+                description: transaction.description,
+            },
+            transactionId,
+            transaction.totalAmount
+        );
+
+        if (!result.success) {
+            return res.status(400).json({ success: false, message: result.message || 'Resend failed' });
+        }
+
+        console.log('🔁 OTP resent for transaction:', transactionId);
+        res.json({ success: true, message: 'A new OTP has been sent to your phone.' });
+
+    } catch (err) {
+        console.error('❌ Resend OTP error:', err.message);
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
+
 // Verify OTP for Moolre payment (called when Moolre returns TP14 on initiation)
 app.post('/api/payment/verify-otp', async (req, res) => {
     try {
