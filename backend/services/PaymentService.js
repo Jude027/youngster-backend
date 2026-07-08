@@ -256,7 +256,13 @@ class PaymentService {
 
     /**
      * Submit OTP for Moolre payment verification (called after TP14 response).
-     * Re-calls the same endpoint with otpcode added — Moolre then sends USSD prompt.
+     *
+     * Moolre's 3-step flow:
+     *   1. POST /open/transact/payment (no otpcode)  → TP14 (OTP SMS sent)
+     *   2. POST /open/transact/payment (with otpcode) → TP17 (phone verified)
+     *   3. POST /open/transact/payment (no otpcode, same externalref) → USSD push sent
+     *
+     * This function handles steps 2 and 3.
      */
     static async verifyOtp(transactionId, otpCode) {
         const transaction = await PaymentTransaction.findOne({ transactionId });
@@ -274,57 +280,92 @@ class PaymentService {
         const channelCode   = CHANNEL_MAP[providerKey] || '13';
         const accountnumber = gateway.accountNumber || gateway.apiKey || '';
         const baseUrl       = (gateway.apiBaseUrl || 'https://api.moolre.com').replace(/\/+$/, '');
+        const url           = `${baseUrl}/open/transact/payment`;
+        const headers       = this.getMoolreHeaders(gateway);
 
-        const body = {
+        const baseBody = {
             type:          1,
             channel:       channelCode,
             currency:      'GHS',
             payer:         transaction.phoneNumber,
             amount:        parseFloat(transaction.totalAmount.toFixed(2)),
             externalref:   transactionId,
-            otpcode:       String(otpCode).trim(),
             reference:     transaction.description || `${transaction.provider} Bundle`,
             accountnumber: accountnumber,
         };
 
-        console.log('🔐 Submitting OTP to Moolre', { transactionId });
+        // ── Step 2: submit OTP (phone verification) ───────────────────────────
+        console.log('🔐 Submitting OTP to Moolre (step 2 — phone verify)', { transactionId });
 
-        const response = await fetch(`${baseUrl}/open/transact/payment`, {
+        const otpResponse = await fetch(url, {
             method:  'POST',
-            headers: this.getMoolreHeaders(gateway),
-            body:    JSON.stringify(body),
+            headers,
+            body:    JSON.stringify({ ...baseBody, otpcode: String(otpCode).trim() }),
         });
 
-        const rawText = await response.text();
-        console.log('Moolre OTP response:', rawText.substring(0, 500));
+        const otpRaw = await otpResponse.text();
+        console.log('Moolre OTP response:', otpRaw.substring(0, 500));
 
-        let data;
-        try { data = JSON.parse(rawText); } catch {
-            throw new Error(`Moolre returned non-JSON: ${rawText.substring(0, 200)}`);
+        let otpData;
+        try { otpData = JSON.parse(otpRaw); } catch {
+            throw new Error(`Moolre returned non-JSON: ${otpRaw.substring(0, 200)}`);
         }
 
-        if (data.code === 'TP14') {
+        if (otpData.code === 'TP14') {
             throw new Error('Incorrect OTP. Please check the SMS and try again.');
         }
 
-        if (String(data.status ?? '') !== '1') {
-            throw new Error(data.message || data.code || 'OTP verification failed');
+        if (String(otpData.status ?? '') !== '1') {
+            throw new Error(otpData.message || otpData.code || 'OTP verification failed');
         }
 
-        const gatewayRef = data.data?.transactionid || data.data?.id || '';
-        if (gatewayRef) {
-            transaction.gatewayTransactionId = gatewayRef;
+        // ── Step 3: re-submit WITHOUT otpcode — this triggers the USSD push ──
+        console.log('💳 Submitting payment request to Moolre (step 3 — USSD push)', { transactionId });
+
+        const payResponse = await fetch(url, {
+            method:  'POST',
+            headers,
+            body:    JSON.stringify(baseBody),   // no otpcode
+        });
+
+        const payRaw = await payResponse.text();
+        console.log('Moolre payment request response:', payRaw.substring(0, 500));
+
+        let payData;
+        try { payData = JSON.parse(payRaw); } catch {
+            throw new Error(`Moolre returned non-JSON on payment request: ${payRaw.substring(0, 200)}`);
         }
 
-        // Stamp the moment OTP was verified so the status poller knows when to
-        // start querying Moolre (give Moolre ~10 s to register the transaction).
-        transaction.otpVerifiedAt = new Date();
-        await transaction.save();
+        debugLog('📡 Moolre step-3 payment response', { status: payResponse.status, data: payData });
 
-        console.log('✅ OTP verified — USSD prompt sent to customer phone');
+        // TP14 here means the externalref was reused and Moolre wants a fresh OTP —
+        // this should not happen but guard it just in case.
+        if (payData.code === 'TP14') {
+            throw new Error('Payment request failed: Moolre requires a new OTP. Please start over.');
+        }
+
+        if (String(payData.status ?? '') !== '1') {
+            throw new Error(payData.message || payData.code || 'Payment request failed after OTP verification');
+        }
+
+        // Capture Moolre's own transaction ID if present in step-3 response
+        const gatewayRef = payData.data?.transactionid || payData.data?.id
+            || otpData.data?.transactionid || otpData.data?.id || '';
+
+        // Stamp otpVerifiedAt via updateOne so it persists even if the schema
+        // doesn't declare the field (bypasses Mongoose strict mode).
+        const updateFields = { otpVerifiedAt: new Date() };
+        if (gatewayRef) updateFields.gatewayTransactionId = gatewayRef;
+
+        await PaymentTransaction.updateOne(
+            { transactionId },
+            { $set: updateFields }
+        );
+
+        console.log('✅ OTP verified + USSD push sent to customer phone');
         return {
             success: true,
-            message: data.message || 'OTP verified. Payment prompt sent to your phone.',
+            message: payData.message || 'Payment prompt sent to your phone. Enter your MoMo PIN to approve.',
             transactionId,
         };
     }
@@ -442,8 +483,12 @@ class PaymentService {
             //
             // Fall back to initiatedAt for non-OTP flows (direct USSD push), where
             // a 5-second head start is sufficient.
-            const referenceTime = transaction.otpVerifiedAt || transaction.initiatedAt;
-            const delaySeconds  = transaction.otpVerifiedAt ? 10 : 5;
+            //
+            // Read as lean to pick up otpVerifiedAt even if the schema doesn't
+            // declare it (Mongoose strict mode hides undeclared fields on hydrated docs).
+            const txLean        = await PaymentTransaction.findOne({ transactionId }).lean();
+            const referenceTime = txLean?.otpVerifiedAt || txLean?.initiatedAt || transaction.initiatedAt;
+            const delaySeconds  = txLean?.otpVerifiedAt ? 10 : 5;
             const ageSeconds    = (Date.now() - new Date(referenceTime).getTime()) / 1000;
 
             if (ageSeconds >= delaySeconds) {
