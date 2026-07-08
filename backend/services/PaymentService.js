@@ -314,8 +314,12 @@ class PaymentService {
         const gatewayRef = data.data?.transactionid || data.data?.id || '';
         if (gatewayRef) {
             transaction.gatewayTransactionId = gatewayRef;
-            await transaction.save();
         }
+
+        // Stamp the moment OTP was verified so the status poller knows when to
+        // start querying Moolre (give Moolre ~10 s to register the transaction).
+        transaction.otpVerifiedAt = new Date();
+        await transaction.save();
 
         console.log('✅ OTP verified — USSD prompt sent to customer phone');
         return {
@@ -429,11 +433,20 @@ class PaymentService {
                 return { success: true, status: transaction.status, transaction };
             }
 
-            // Poll Moolre directly for pending/processing transactions
-            // Start polling after 5 seconds (give customer time to approve)
-            const ageSeconds = (Date.now() - new Date(transaction.initiatedAt).getTime()) / 1000;
+            // Poll Moolre directly for pending/processing transactions.
+            //
+            // Use otpVerifiedAt as the reference point when it exists — that is the
+            // moment Moolre actually received the final payment request and issued the
+            // USSD push.  Moolre needs ~10 s to register the transaction before its
+            // status endpoint will return anything other than SS07 ("not found").
+            //
+            // Fall back to initiatedAt for non-OTP flows (direct USSD push), where
+            // a 5-second head start is sufficient.
+            const referenceTime = transaction.otpVerifiedAt || transaction.initiatedAt;
+            const delaySeconds  = transaction.otpVerifiedAt ? 10 : 5;
+            const ageSeconds    = (Date.now() - new Date(referenceTime).getTime()) / 1000;
 
-            if (ageSeconds >= 5) {
+            if (ageSeconds >= delaySeconds) {
                 const gateway = await PaymentGateway.findOne({ name: transaction.paymentGateway });
 
                 if (gateway) {
