@@ -553,14 +553,15 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
     await order.save();
 
     submitOrderToProvider(order, {
-        phoneNumber: resolvedBeneficiary,
-        packageName: resolvedPackageName,
-        capacity: deriveCapacity(resolvedPackageName),
-        price: paymentTransaction.amount,
-        provider: paymentTransaction.provider,
-        network: paymentTransaction.provider,
-        reference: order._id.toString(),
-        orderId: order._id
+        phoneNumber:  resolvedBeneficiary,
+        packageName:  resolvedPackageName,
+        capacity:     deriveCapacity(resolvedPackageName),
+        price:        paymentTransaction.amount,
+        provider:     paymentTransaction.provider,
+        network:      paymentTransaction.provider,
+        reference:    order._id.toString(),
+        orderId:      order._id,
+        isUnverified: Boolean(paymentTransaction.isUnverified),
     }).catch(err => console.error('Provider submission failed:', err.message));
 
     const txRecord = new Transaction({
@@ -1037,14 +1038,15 @@ app.post('/api/orders', async (req, res) => {
         await order.save();
 
         const providerPayload = {
-            phoneNumber: resolvedPhoneNumber,
-            packageName: resolvedPackageName,
-            capacity: resolvedCapacity,
-            price: resolvedPrice,
-            provider: resolvedProviderName,
-            network: resolvedProviderName,
-            reference: order._id.toString(),
-            orderId: order._id
+            phoneNumber:  resolvedPhoneNumber,
+            packageName:  resolvedPackageName,
+            capacity:     resolvedCapacity,
+            price:        resolvedPrice,
+            provider:     resolvedProviderName,
+            network:      resolvedProviderName,
+            reference:    order._id.toString(),
+            orderId:      order._id,
+            isUnverified: Boolean(req.body.isUnverified),
         };
 
         await submitOrderToProvider(order, providerPayload);
@@ -2382,6 +2384,7 @@ app.post('/api/payment/initiate', async (req, res) => {
             storeSlug,
             clientType,
             beneficiary: resolvedBeneficiary,
+            isUnverified: Boolean(req.body.isUnverified),
             metadata: {
                 userId,
                 packageName: resolvedPackageName,
@@ -2390,7 +2393,8 @@ app.post('/api/payment/initiate', async (req, res) => {
                 clientType,
                 paymentNetwork: resolvedPaymentNetwork,
                 orderProvider: resolvedOrderProvider,
-                beneficiary: resolvedBeneficiary
+                beneficiary: resolvedBeneficiary,
+                isUnverified: Boolean(req.body.isUnverified),
             }
         });
 
