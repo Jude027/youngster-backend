@@ -283,12 +283,12 @@ class UniversalAPIHandler {
                     payload['bundleType'] = pkgMap.apiNetwork;
                 }
             } else if (ourField === 'network') {
-                // Use the package mapping's apiNetwork value if available
-                // (e.g. DataHub requires "YELLO" instead of "MTN").
-                // Fall back to the raw provider/network name if not set.
-                payload[apiField] = (pkgMap && pkgMap.apiNetwork)
-                    ? pkgMap.apiNetwork
-                    : (orderData.network || orderData.provider);
+                // Use config.networkKey if set (e.g. DataHub requires "YELLO" for MTN).
+                // Falls back to pkgMap.apiNetwork, then the raw provider/network name.
+                payload[apiField] = config.networkKey
+                    || (pkgMap && pkgMap.apiNetwork)
+                    || orderData.network
+                    || orderData.provider;
             } else if (ourField === 'reference') {
                 payload[apiField] = orderData.reference || `REF-${Date.now()}`;
             } else if (orderData[ourField] !== undefined) {
@@ -332,10 +332,19 @@ class UniversalAPIHandler {
         }
 
         // iGet Telecel — all bundle sizes use the same bundleType "Telecel-5959".
-        // This overrides whatever the requestPayloadMapping put in bundleType
-        // (typically the raw provider name "Telecel") and ensures the correct
-        // iGet bundle identifier is always sent regardless of packageMapping state.
-        if (providerKey === 'telecel' || providerKey === 'telecel data') {
+        // Only apply this hardcode when:
+        //   1. The provider is Telecel, AND
+        //   2. No config.networkKey was set (admin hasn't overridden it), AND
+        //   3. The payload mapping actually maps something to "bundleType"
+        //      (meaning this is an iGet-style config that expects bundleType).
+        // This prevents injecting a spurious bundleType into DataHub or XpresPortal
+        // payloads if Telecel is ever configured on a different API.
+        const payloadHasBundleTypeField = Object.values(actualMapping).includes('bundleType');
+        if (
+            (providerKey === 'telecel' || providerKey === 'telecel data') &&
+            !config.networkKey &&
+            payloadHasBundleTypeField
+        ) {
             payload.bundleType = 'Telecel-5959';
         }
 
