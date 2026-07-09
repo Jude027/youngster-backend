@@ -263,22 +263,32 @@ class UniversalAPIHandler {
         // Build payload with mapped fields
         for (const [ourField, apiField] of Object.entries(actualMapping)) {
             if (ourField === 'capacity') {
-                // Always send capacity as a plain NUMBER (iGet requires 1, 2, 5, 10…
-                // not a string like "5GB"). Extract the leading numeric value.
+                // Extract the leading numeric value from whatever apiCapacity resolved to.
+                // Most APIs (iGet) want a plain number.  DataHub wants a string ("1", "2"…).
+                // If the config sets capacityAsString: true, keep it as a string.
                 const numericCapacity = parseFloat(
                     String(apiCapacity).match(/^(\d+(?:\.\d+)?)/)?.[1] ?? apiCapacity
                 );
-                payload[apiField] = isNaN(numericCapacity) ? apiCapacity : numericCapacity;
+                const useString = config && config.capacityAsString;
+                payload[apiField] = isNaN(numericCapacity)
+                    ? apiCapacity
+                    : (useString ? String(numericCapacity) : numericCapacity);
 
                 // iGet API also requires a separate bundleType field alongside capacity.
                 // e.g. { capacity: 5, bundleType: "Telecel-5959" }
                 // Store apiNetwork on the packageMapping entry to supply this value.
-                if (pkgMap && pkgMap.apiNetwork) {
+                // Skip this for providers that use apiNetwork for the network key itself
+                // (DataHub) — it will be applied in the 'network' branch instead.
+                if (pkgMap && pkgMap.apiNetwork && !(config && config.networkKeyFromMapping)) {
                     payload['bundleType'] = pkgMap.apiNetwork;
                 }
             } else if (ourField === 'network') {
-                // network field always carries the provider name, not the bundle ID
-                payload[apiField] = orderData.network || orderData.provider;
+                // Use the package mapping's apiNetwork value if available
+                // (e.g. DataHub requires "YELLO" instead of "MTN").
+                // Fall back to the raw provider/network name if not set.
+                payload[apiField] = (pkgMap && pkgMap.apiNetwork)
+                    ? pkgMap.apiNetwork
+                    : (orderData.network || orderData.provider);
             } else if (ourField === 'reference') {
                 payload[apiField] = orderData.reference || `REF-${Date.now()}`;
             } else if (orderData[ourField] !== undefined) {
