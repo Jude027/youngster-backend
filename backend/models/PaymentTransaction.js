@@ -35,10 +35,21 @@ const paymentTransactionSchema = new mongoose.Schema({
     packageName: { type: String, default: '' },
     bundle: { type: String, default: '' },
     metadata: mongoose.Schema.Types.Mixed,
-    
+
+    // When true, the beneficiary number failed verification before payment was
+    // initiated. The order is routed through the secondary API config flagged
+    // forUnverifiedNumbers: true on the Provider (if one is configured).
+    isUnverified: { type: Boolean, default: false },
+
     // Timestamps
     initiatedAt: { type: Date, default: Date.now },
     completedAt: Date,
+
+    // Set when OTP is verified (Moolre 3-step flow). Used by checkPaymentStatus
+    // to apply a 10s grace period before polling Moolre's status endpoint —
+    // Moolre won't register the transaction until the customer responds to the
+    // USSD prompt.
+    otpVerifiedAt: { type: Date, default: null },
     
     // Retry Information
     retryCount: { type: Number, default: 0 },
