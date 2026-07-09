@@ -1133,6 +1133,40 @@ app.post('/api/transactions', async (req, res) => {
     }
 });
 
+// ==================== GUEST ORDERS & TRANSACTIONS (public — no auth) ====================
+// Returns records for a specific guest session only.
+// Guests are identified by a guestSessionId generated in localStorage on their
+// first storefront visit. Both the ID and the storeSlug are required so a guest
+// from one store can never see records from another store.
+
+app.get('/api/guest/orders', async (req, res) => {
+    try {
+        const { guestSessionId, store } = req.query;
+        if (!guestSessionId || !store) {
+            return res.status(400).json({ error: 'guestSessionId and store are required' });
+        }
+        const orders = await Order.find({ guestSessionId, storeSlug: store })
+            .sort({ created: -1 }).limit(50).lean();
+        res.json(orders);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/guest/transactions', async (req, res) => {
+    try {
+        const { guestSessionId, store } = req.query;
+        if (!guestSessionId || !store) {
+            return res.status(400).json({ error: 'guestSessionId and store are required' });
+        }
+        const txns = await Transaction.find({ guestSessionId, storeSlug: store })
+            .sort({ created: -1 }).limit(50).lean();
+        res.json(txns);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // ==================== REFERRAL PRICES ====================
 app.get('/api/referral-prices', auth, async (req, res) => {
     try {
