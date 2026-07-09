@@ -12,7 +12,7 @@ const transactionSchema = new mongoose.Schema({
     amount: Number,
     method: { type: String, enum: ['Mobile Money', 'Bank', 'Card', 'Cash'], default: 'Mobile Money' },
     created: { type: Date, default: Date.now },
-    status: { type: String, enum: ['pending', 'complete', 'failed'], default: 'pending' },
+    status: { type: String, enum: ['Pending', 'Completed', 'Failed'], default: 'Pending' },
     orderId: { type: mongoose.Schema.Types.ObjectId, ref: 'Order', index: true },
     storeSlug: { type: String, index: true },
     clientType: String,
