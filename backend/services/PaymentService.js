@@ -91,10 +91,14 @@ class PaymentService {
                 bundle:         paymentData.bundle_size || paymentData.bundle || '',
                 metadata:       {
                     ...(paymentData.metadata || {}),
-                    packageName: paymentData.packageName || '',
-                    bundle_size: paymentData.bundle_size || '',
-                    storeSlug:   paymentData.storeSlug   || '',
-                    clientType:  paymentData.clientType  || '',
+                    packageName:     paymentData.packageName || '',
+                    bundle_size:     paymentData.bundle_size || '',
+                    storeSlug:       paymentData.storeSlug   || '',
+                    clientType:      paymentData.clientType  || '',
+                    // packageProvider is the actual data network (e.g. "AT Ishare", "MTN EXPRESS").
+                    // paymentData.provider is the MoMo payment network used for Moolre channel
+                    // mapping — they can differ when someone buys AT data and pays with MTN MoMo.
+                    packageProvider: paymentData.packageProvider || paymentData.provider || '',
                 }
             });
             await transaction.save();
@@ -512,19 +516,24 @@ class PaymentService {
                                 if (!existingOrder) {
                                     const beneficiary = transaction.metadata?.beneficiary
                                         || transaction.phoneNumber;
+                                    // Use packageProvider (the actual data network, e.g. "AT Ishare")
+                                    // rather than transaction.provider (the MoMo payment network,
+                                    // e.g. "MTN") — they differ when paying cross-network.
+                                    const orderProvider = transaction.metadata?.packageProvider
+                                        || transaction.provider;
                                     await Order.create({
                                         userId:        transaction.userId || null,
                                         storeSlug:     transaction.storeSlug || null,
                                         beneficiary,
                                         phoneNumber:   beneficiary,
-                                        package:       transaction.provider,
+                                        package:       orderProvider,
                                         bundle_size:   transaction.metadata?.bundle_size || transaction.description,
                                         amount:        transaction.amount,
                                         status:        'pending',
                                         transactionId,
                                         created:       new Date(),
                                     });
-                                    console.log('✅ Order auto-created for transaction', transactionId);
+                                    console.log('✅ Order auto-created for transaction', transactionId, { orderProvider });
                                 }
                             } catch (orderErr) {
                                 console.warn('⚠️ Could not auto-create order:', orderErr.message);
