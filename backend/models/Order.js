@@ -1,7 +1,11 @@
 const mongoose = require('mongoose');
 
 const orderSchema = new mongoose.Schema({
-    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    // userId = the dealer (store owner) whose referral link this guest came through.
+    // Resolved server-side from storeSlug — not sent from the browser.
+    // default: null instead of required: true because the value is assigned
+    // after the request arrives, not before Mongoose validation runs.
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     beneficiary: String,
     phoneNumber: String,
     package: String,
@@ -37,10 +41,11 @@ const orderSchema = new mongoose.Schema({
     storeSlug: { type: String, index: true },
     clientType: String,
 
-    providerReference: {
-        type: String,
-        index: true
-    },
+    // Unique ID generated in the customer's browser on first storefront visit.
+    // Allows guests to see only their own orders without requiring login.
+    guestSessionId: { type: String, index: true, default: null },
+
+    providerReference: { type: String, index: true },
     providerOrderId: String,
     lastStatusUpdate: Date,
 });
