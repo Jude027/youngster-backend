@@ -5,13 +5,29 @@
 const Provider = require('../models/Provider');
 const ProviderAPILog = require('../models/ProviderAPILog');
 
-function getActiveApiConfig(provider) {
-    const activeConfig = Array.isArray(provider.apiConfigs)
-        ? provider.apiConfigs.find(config => config && config.enabled)
-        : null;
+function getActiveApiConfig(provider, isUnverified = false) {
+    // If the order is for an unverified number, prefer a config flagged
+    // forUnverifiedNumbers. Fall back to the standard config if none exists.
+    const configs = Array.isArray(provider.apiConfigs) ? provider.apiConfigs : [];
 
-    if (activeConfig) return activeConfig;
-    return provider.apiConfig && provider.apiConfig.enabled ? provider.apiConfig : null;
+    if (isUnverified) {
+        // Look in the apiConfigs array first
+        const unverifiedConfig = configs.find(c => c && c.enabled && c.forUnverifiedNumbers);
+        if (unverifiedConfig) return unverifiedConfig;
+
+        // Also check the single apiConfig field
+        if (provider.apiConfig?.enabled && provider.apiConfig?.forUnverifiedNumbers) {
+            return provider.apiConfig;
+        }
+        // No dedicated unverified config found — fall through to standard config
+    }
+
+    // Standard path: first enabled config that is NOT the unverified-only config
+    const standardConfig = configs.find(c => c && c.enabled && !c.forUnverifiedNumbers);
+    if (standardConfig) return standardConfig;
+
+    // Fall back to the single apiConfig field (legacy / most providers)
+    return provider.apiConfig?.enabled ? provider.apiConfig : null;
 }
 
 /**
@@ -50,7 +66,7 @@ class UniversalAPIHandler {
     /**
      * Process order through provider's configured API
      * @param {string} providerName - Name of the provider
-     * @param {object} orderData - Order details { phoneNumber, packageName, price, etc }
+     * @param {object} orderData - Order details { phoneNumber, packageName, price, isUnverified, etc }
      * @returns {Promise<object>} - Response from external API or error
      */
     static async processOrder(providerName, orderData) {
@@ -61,9 +77,14 @@ class UniversalAPIHandler {
                 throw new Error(`Provider ${providerName} not found`);
             }
 
-            const activeApiConfig = getActiveApiConfig(provider);
+            const isUnverified = Boolean(orderData.isUnverified);
+            const activeApiConfig = getActiveApiConfig(provider, isUnverified);
             if (!activeApiConfig) {
                 throw new Error(`API not configured for provider ${providerName}`);
+            }
+
+            if (isUnverified && activeApiConfig.forUnverifiedNumbers) {
+                console.log(`[UniversalAPIHandler] Using unverified-number config for ${providerName}`);
             }
 
             // Build API request
@@ -126,7 +147,8 @@ class UniversalAPIHandler {
      * Build API request based on provider configuration
      */
     static buildAPIRequest(provider, orderData, activeApiConfig = null) {
-        const config = activeApiConfig || getActiveApiConfig(provider) || provider.apiConfig;
+        const isUnverified = Boolean(orderData.isUnverified);
+        const config = activeApiConfig || getActiveApiConfig(provider, isUnverified) || provider.apiConfig;
         
         // Sanitize config values to remove any problematic Unicode characters
         const sanitizedConfig = {
