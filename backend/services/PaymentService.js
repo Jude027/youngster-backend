@@ -89,16 +89,17 @@ class PaymentService {
                 description:    paymentData.description || `Payment for ${paymentData.provider}`,
                 packageName:    paymentData.packageName || '',
                 bundle:         paymentData.bundle_size || paymentData.bundle || '',
+                // Persist so createPaidOrderRecords can route to the right API config
+                // when the webhook fires (potentially minutes after initiation).
+                isUnverified:   Boolean(paymentData.isUnverified),
                 metadata:       {
                     ...(paymentData.metadata || {}),
                     packageName:     paymentData.packageName || '',
                     bundle_size:     paymentData.bundle_size || '',
                     storeSlug:       paymentData.storeSlug   || '',
                     clientType:      paymentData.clientType  || '',
-                    // packageProvider is the actual data network (e.g. "AT Ishare", "MTN EXPRESS").
-                    // paymentData.provider is the MoMo payment network used for Moolre channel
-                    // mapping — they can differ when someone buys AT data and pays with MTN MoMo.
                     packageProvider: paymentData.packageProvider || paymentData.provider || '',
+                    isUnverified:    Boolean(paymentData.isUnverified),
                 }
             });
             await transaction.save();
