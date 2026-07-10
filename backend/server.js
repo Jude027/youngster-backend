@@ -1208,9 +1208,7 @@ app.get('/api/storefront-prices', async (req, res) => {
         const query = { userId: storeSettings.userId };
         if (clientType) query.clientType = clientType;
 
-        const prices = await ReferralPrice.find({}).lean();
-
-        console.log(prices);
+        const prices = await ReferralPrice.find(query).lean();
 
         // Only return rows where a price was actually set
         res.json(prices.filter(p => p.price > 0));
