@@ -48,6 +48,7 @@ const orderSchema = new mongoose.Schema({
     providerReference: { type: String, index: true },
     providerOrderId: String,
     lastStatusUpdate: Date,
+    transactionId: { type: String, index: true, sparse: true },
 });
 
 module.exports = mongoose.model('Order', orderSchema);
