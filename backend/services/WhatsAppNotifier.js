@@ -245,6 +245,40 @@ async function getBrowser() {
         console.warn('[WhatsApp] Navigation warning (still waiting for chat list):', err.message);
     }
 
+    // On Railway (headless), if session is not yet established, poll for a QR code
+    // canvas and print it as ASCII to the logs so you can scan it from the dashboard.
+    if (isHeadless && !sessionExists) {
+        console.log('[WhatsApp] Headless mode — watching for QR code canvas to appear in logs...');
+        let qrPrinted = false;
+        for (let i = 0; i < 30 && !qrPrinted; i++) {
+            await sleep(2000);
+            try {
+                const qrDataUrl = await _page.evaluate(() => {
+                    // WhatsApp Web renders the QR as a <canvas> element
+                    const canvas = document.querySelector('canvas');
+                    if (!canvas) return null;
+                    return canvas.toDataURL('image/png');
+                });
+                if (qrDataUrl) {
+                    // Print instructions — user can use an online base64-to-QR tool
+                    console.log('[WhatsApp] ══════════════════════════════════════════════');
+                    console.log('[WhatsApp] QR CODE DETECTED — scan it with your phone:');
+                    console.log('[WhatsApp] 1. Copy the data URL below');
+                    console.log('[WhatsApp] 2. Paste it at https://base64.guru/tools/png-to-qr');
+                    console.log('[WhatsApp] 3. Scan the QR with WhatsApp on your phone');
+                    console.log('[WhatsApp] DATA URL (first 200 chars):', qrDataUrl.substring(0, 200));
+                    console.log('[WhatsApp] FULL DATA URL:');
+                    // Print in chunks so Railway logs don't truncate it
+                    for (let j = 0; j < qrDataUrl.length; j += 500) {
+                        console.log(qrDataUrl.substring(j, j + 500));
+                    }
+                    console.log('[WhatsApp] ══════════════════════════════════════════════');
+                    qrPrinted = true;
+                }
+            } catch { /* keep trying */ }
+        }
+    }
+
     console.log(`[WhatsApp] Waiting for chat list (timeout: ${WA_READY_TIMEOUT_MS / 1000}s) — scan QR if shown. Browser stays open.`);
     try {
         await _page.waitForSelector(CHAT_LIST_SELECTOR, { timeout: WA_READY_TIMEOUT_MS });
