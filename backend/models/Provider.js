@@ -1,71 +1,60 @@
 const mongoose = require('mongoose');
 
-// Reusable sub-schema for a single API configuration entry.
-// Both the single `apiConfig` field and every entry in the `apiConfigs` array
-// share this same shape so the handler and admin UI can treat them identically.
-const apiConfigSchema = new mongoose.Schema({
-    // Human-readable label shown in the admin "Saved API Configuration" dropdown.
-    // e.g. "DataHub (verified)", "iGet (unverified numbers)"
-    name: { type: String, default: 'Default' },
-
-    enabled: { type: Boolean, default: false },
-    type: { type: String, enum: ['bearer-token', 'api-key', 'oauth', 'custom'], default: 'bearer-token' },
-    baseUrl: { type: String, default: '' },
-
-    authMethod: { type: String, enum: ['header', 'query', 'body'], default: 'header' },
-    authHeaderName: { type: String, default: 'Authorization' },
-    authHeaderValue: { type: String, default: '' },
-
-    orderEndpoint: { type: String, default: '' },
-    orderMethod: { type: String, enum: ['POST', 'PUT', 'GET'], default: 'POST' },
-
+// Sub-schema for a single API configuration entry in the apiConfigs array.
+// The legacy single `apiConfig` field uses Mixed to stay backwards compatible.
+const apiConfigEntrySchema = {
+    name:                  { type: String, default: 'Default' },
+    enabled:               { type: Boolean, default: false },
+    type:                  { type: String, enum: ['bearer-token', 'api-key', 'oauth', 'custom'], default: 'bearer-token' },
+    baseUrl:               { type: String, default: '' },
+    authMethod:            { type: String, enum: ['header', 'query', 'body'], default: 'header' },
+    authHeaderName:        { type: String, default: 'Authorization' },
+    authHeaderValue:       { type: String, default: '' },
+    orderEndpoint:         { type: String, default: '' },
+    orderMethod:           { type: String, enum: ['POST', 'PUT', 'GET'], default: 'POST' },
     requestPayloadMapping: { type: mongoose.Schema.Types.Mixed, default: {} },
-
-    statusEndpoint: { type: String, default: '' },
-    statusMethod: { type: String, enum: ['GET', 'POST'], default: 'GET' },
-    statusPayloadMapping: { type: mongoose.Schema.Types.Mixed, default: {} },
-
-    balanceEndpoint: { type: String, default: '' },
-    balanceMethod: { type: String, enum: ['GET', 'POST'], default: 'GET' },
-
-    rateLimitDelay: { type: Number, default: 60000 },
-
-    successField: { type: String, default: 'success' },
-    dataField: { type: String, default: 'data' },
-
-    phoneFormat: { type: String, enum: ['international', 'e164', 'national', 'local', 'raw'], default: 'international' },
-    networkKey: { type: String, default: '' },
-    capacityAsString: { type: Boolean, default: false },
-
-    // When true, this config is used only for orders where the beneficiary
-    // number failed verification.  The primary config handles verified numbers.
-    forUnverifiedNumbers: { type: Boolean, default: false },
-
-    additionalHeaders: { type: mongoose.Schema.Types.Mixed, default: {} },
-}, { _id: true });
+    statusEndpoint:        { type: String, default: '' },
+    statusMethod:          { type: String, enum: ['GET', 'POST'], default: 'GET' },
+    statusPayloadMapping:  { type: mongoose.Schema.Types.Mixed, default: {} },
+    balanceEndpoint:       { type: String, default: '' },
+    balanceMethod:         { type: String, enum: ['GET', 'POST'], default: 'GET' },
+    rateLimitDelay:        { type: Number, default: 60000 },
+    successField:          { type: String, default: 'success' },
+    dataField:             { type: String, default: 'data' },
+    phoneFormat:           { type: String, enum: ['international', 'e164', 'national', 'local', 'raw'], default: 'international' },
+    networkKey:            { type: String, default: '' },
+    capacityAsString:      { type: Boolean, default: false },
+    forUnverifiedNumbers:  { type: Boolean, default: false },
+    additionalHeaders:     { type: mongoose.Schema.Types.Mixed, default: {} },
+};
 
 const providerSchema = new mongoose.Schema({
-    name: { type: String, required: true, unique: true },
+    name:    { type: String, required: true, unique: true },
     logoUrl: { type: String, default: '' },
 
     // ── Primary / legacy single config ────────────────────────────────────────
-    // Kept for backwards compatibility.  New code should prefer `apiConfigs`.
-    apiConfig: apiConfigSchema,
+    // Kept as Mixed so it is fully backwards compatible with existing saved data.
+    // New code reads this via getActiveApiConfig() in UniversalAPIHandler.
+    apiConfig: {
+        type: mongoose.Schema.Types.Mixed,
+        default: {}
+    },
 
     // ── Multi-config array ─────────────────────────────────────────────────────
-    // Allows one provider to have multiple API configurations, e.g.:
-    //   [0] DataHub — for verified numbers
-    //   [1] iGet    — for unverified/ported numbers (forUnverifiedNumbers: true)
-    // UniversalAPIHandler picks the right entry based on the `isUnverified` flag.
-    apiConfigs: { type: [apiConfigSchema], default: [] },
+    // Each entry follows apiConfigEntrySchema.  Add new configs via
+    // POST /api/admin/provider-api-configs/:name.
+    apiConfigs: {
+        type: [ new mongoose.Schema(apiConfigEntrySchema, { _id: true }) ],
+        default: []
+    },
 
-    // Package Price Mapping (which price maps to which API capacity)
+    // Package Price Mapping
     packageMapping: [
         {
             packageName: String,
             apiCapacity: mongoose.Schema.Types.Mixed,
-            apiNetwork: String,
-            price: Number
+            apiNetwork:  String,
+            price:       Number
         }
     ],
 
@@ -78,6 +67,7 @@ const providerSchema = new mongoose.Schema({
         apiMinGb:      { type: Number },
         apiMaxGb:      { type: Number }
     },
+
     createdAt: { type: Date, default: Date.now },
     updatedAt: { type: Date, default: Date.now }
 });
