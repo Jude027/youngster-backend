@@ -1950,9 +1950,10 @@ app.get('/api/admin/provider-api-config/:providerName', auth, admin, async (req,
         const provider = await Provider.findOne({ name: req.params.providerName });
         if (!provider) return res.status(404).json({ message: 'Provider not found' });
         res.json({
-            providerName: provider.name,
-            apiConfig: provider.apiConfig || {},
-            orderRouting: provider.orderRouting || {},
+            providerName:  provider.name,
+            apiConfig:     provider.apiConfig     || {},
+            apiConfigs:    provider.apiConfigs     || [],   // multi-config array
+            orderRouting:  provider.orderRouting   || {},
             packageMapping: provider.packageMapping || []
         });
     } catch (err) {
@@ -2002,6 +2003,89 @@ app.put('/api/admin/provider-api-config/:providerName', auth, admin, async (req,
                 orderRouting: provider.orderRouting,
                 packageMapping: provider.packageMapping
             }
+        });
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+});
+
+// ==================== PROVIDER API CONFIGS ARRAY (multi-config) ====================
+// These endpoints manage the `apiConfigs` array on a provider, enabling multiple
+// API configurations per provider (e.g. DataHub for verified numbers, iGet for unverified).
+
+// POST — add a new config entry to the array
+app.post('/api/admin/provider-api-configs/:providerName', auth, admin, async (req, res) => {
+    try {
+        const provider = await Provider.findOne({ name: req.params.providerName });
+        if (!provider) return res.status(404).json({ message: 'Provider not found' });
+
+        const newConfig = req.body.apiConfig || req.body;
+        if (!provider.apiConfigs) provider.apiConfigs = [];
+        provider.apiConfigs.push(newConfig);
+        provider.markModified('apiConfigs');
+        provider.updatedAt = new Date();
+        await provider.save();
+
+        const added = provider.apiConfigs[provider.apiConfigs.length - 1];
+        res.status(201).json({
+            message: 'API configuration added',
+            index: provider.apiConfigs.length - 1,
+            config: added,
+            apiConfigs: provider.apiConfigs
+        });
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+});
+
+// PUT — update a specific config entry in the array by index
+app.put('/api/admin/provider-api-configs/:providerName/:index', auth, admin, async (req, res) => {
+    try {
+        const provider = await Provider.findOne({ name: req.params.providerName });
+        if (!provider) return res.status(404).json({ message: 'Provider not found' });
+
+        const idx = parseInt(req.params.index, 10);
+        if (isNaN(idx) || idx < 0 || idx >= (provider.apiConfigs || []).length) {
+            return res.status(400).json({ message: `Invalid index ${idx}` });
+        }
+
+        const update = req.body.apiConfig || req.body;
+        // Merge update into the existing entry
+        provider.apiConfigs[idx] = { ...provider.apiConfigs[idx].toObject(), ...update };
+        provider.markModified('apiConfigs');
+        provider.updatedAt = new Date();
+        await provider.save();
+
+        res.json({
+            message: 'API configuration updated',
+            index: idx,
+            config: provider.apiConfigs[idx],
+            apiConfigs: provider.apiConfigs
+        });
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+});
+
+// DELETE — remove a specific config entry from the array by index
+app.delete('/api/admin/provider-api-configs/:providerName/:index', auth, admin, async (req, res) => {
+    try {
+        const provider = await Provider.findOne({ name: req.params.providerName });
+        if (!provider) return res.status(404).json({ message: 'Provider not found' });
+
+        const idx = parseInt(req.params.index, 10);
+        if (isNaN(idx) || idx < 0 || idx >= (provider.apiConfigs || []).length) {
+            return res.status(400).json({ message: `Invalid index ${idx}` });
+        }
+
+        provider.apiConfigs.splice(idx, 1);
+        provider.markModified('apiConfigs');
+        provider.updatedAt = new Date();
+        await provider.save();
+
+        res.json({
+            message: 'API configuration deleted',
+            apiConfigs: provider.apiConfigs
         });
     } catch (err) {
         res.status(500).json({ message: err.message });
