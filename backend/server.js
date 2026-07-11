@@ -493,10 +493,13 @@ async function recordOrderCommission({ userId, order, paymentTransaction, transa
 }
 
 async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentTransaction.paymentGateway) {
-    if (!paymentTransaction) {
-        return null;
-    }
+    if (!paymentTransaction) return null;
 
+    // ── Duplicate guard ───────────────────────────────────────────────────────
+    // Multiple callers (webhook + status poll) may fire simultaneously.
+    // Use a transactionId-based lock stored on the PaymentTransaction itself:
+    // stamp orderId = 'pending' before doing any work, then check it at entry.
+    // Also check by transactionId on the Order collection as a second guard.
     if (paymentTransaction.orderId) {
         const existingOrder = await Order.findById(paymentTransaction.orderId);
         if (existingOrder) {
@@ -513,6 +516,29 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
             }
             return existingOrder._id;
         }
+    }
+
+    // Check by transactionId — catches the race where orderId isn't stamped yet
+    const existingByTxn = await Order.findOne({ transactionId: paymentTransaction.transactionId });
+    if (existingByTxn) {
+        console.log('[PaidOrder] Order already exists for transactionId — skipping duplicate creation', {
+            transactionId: paymentTransaction.transactionId,
+            existingOrderId: existingByTxn._id
+        });
+        return existingByTxn._id;
+    }
+
+    // Atomically claim this transaction so concurrent calls can't both pass
+    const claimed = await PaymentTransaction.findOneAndUpdate(
+        { transactionId: paymentTransaction.transactionId, orderId: { $exists: false } },
+        { $set: { orderId: null } }, // placeholder — real orderId set below
+        { new: false }
+    );
+    if (!claimed) {
+        // Another call already claimed it — wait briefly then return the created order
+        await new Promise(r => setTimeout(r, 800));
+        const created = await Order.findOne({ transactionId: paymentTransaction.transactionId });
+        return created?._id || null;
     }
 
     const userId = await resolvePaymentUserId(paymentTransaction);
@@ -549,6 +575,7 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
         balanceBefore,
         balanceAfter: balanceBefore,
         status: 'Processing',
+        transactionId: paymentTransaction.transactionId,
         report: `Payment via ${gatewayName} - Transaction: ${paymentTransaction.transactionId}`
     });
     await order.save();
@@ -840,41 +867,9 @@ app.post('/api/manual-mark-success/:transactionId', async (req, res) => {
         // Create Order and Transaction records (same logic as webhook)
         try {
             if (transaction.userId) {
-                const user = await User.findById(transaction.userId);
-                if (user) {
-                    const balanceBefore = user.balance || 0;
-                    const resolvedPackageName =
-                        transaction.packageName ||
-                        transaction.metadata?.packageName ||
-                        transaction.metadata?.bundle_size ||
-                        transaction.bundle_size || '';
-
-                    const order = new Order({
-                        userId: transaction.userId,
-                        storeSlug: transaction.storeSlug || null,
-                        beneficiary: transaction.phoneNumber,
-                        package: transaction.provider,
-                        providerName: transaction.provider,
-                        packageName: resolvedPackageName,
-                        bundleSize: resolvedPackageName,
-                        amount: transaction.amount,
-                        balanceBefore,
-                        balanceAfter: balanceBefore,
-                        status: 'Processing',
-                        report: `Payment via ${transaction.paymentGateway} - Transaction: ${transactionId}`
-                    });
-                    await order.save();
-
-                    submitOrderToProvider(order, {
-                        phoneNumber: transaction.phoneNumber,
-                        packageName: resolvedPackageName,
-                        capacity: deriveCapacity(resolvedPackageName),
-                        price: transaction.amount,
-                        provider: transaction.provider,
-                        network: transaction.provider,
-                        reference: order._id.toString(),
-                        orderId: order._id
-                    }).catch(err => console.error('Provider submission failed:', err.message));
+                // Use createPaidOrderRecords to avoid duplicate orders
+                await createPaidOrderRecords(transaction, transaction.paymentGateway);
+            }
 
                     const txRecord = new Transaction({
                         userId: transaction.userId,
