@@ -131,18 +131,19 @@ function firstDefined(...values) {
 function normalizeProviderOrderStatus(status = '') {
     const rawStatus = String(status).toLowerCase().trim();
     const statusMap = {
-        delivered: 'completed',
-        resolved: 'completed',
-        success: 'completed',
-        successful: 'completed',
-        completed: 'completed',
-        cancelled: 'failed',
-        canceled: 'failed',
-        rejected: 'failed',
-        failed: 'failed',
-        refunded: 'cancelled/refunded',
-        pending: 'processing',
-        processing: 'processing'
+        delivered:  'Completed',
+        resolved:   'Completed',
+        success:    'Completed',
+        successful: 'Completed',
+        completed:  'Completed',
+        complete:   'Completed',
+        cancelled:  'Failed',
+        canceled:   'Failed',
+        rejected:   'Failed',
+        failed:     'Failed',
+        refunded:   'Cancelled/Refunded',
+        pending:    'Processing',
+        processing: 'Processing'
     };
 
     return statusMap[rawStatus] || null;
@@ -1621,7 +1622,7 @@ app.put('/api/admin/orders/:id', auth, admin, async (req, res) => {
     try {
         const { status, report } = req.body;
         const order = await Order.findByIdAndUpdate(req.params.id,
-            { status, report, completed: status === 'completed' ? new Date() : undefined },
+            { status, report, completed: (status === 'Completed' || status === 'completed') ? new Date() : undefined },
             { new: true }
         );
         res.json(order);
@@ -1951,7 +1952,17 @@ app.delete('/api/admin/providers/:name', auth, admin, async (req, res) => {
     }
 });
 
-// ==================== PROVIDER API CONFIGURATION ====================
+// ==================== WHATSAPP SESSION MANAGEMENT ====================
+app.post('/api/admin/whatsapp/reset-session', auth, admin, async (req, res) => {
+    try {
+        const { clearSession } = require('./services/WhatsAppNotifier');
+        await clearSession();
+        res.json({ message: 'WhatsApp session cleared. A fresh QR code will appear on the next WhatsApp order.' });
+    } catch (err) {
+        console.error('[WhatsApp] Reset session error:', err.message);
+        res.status(500).json({ message: 'Failed to reset session: ' + err.message });
+    }
+});
 // Get provider API configuration
 app.get('/api/admin/provider-api-config/:providerName', auth, admin, async (req, res) => {
     try {
@@ -2989,7 +3000,7 @@ async function handleXpresPortalWebhook(req, res) {
                 status: normalizedStatus,
                 providerReference: reference || undefined,
                 providerOrderId: orderId || undefined,
-                completed: normalizedStatus === 'completed' ? new Date() : undefined,
+                completed: normalizedStatus === 'Completed' ? new Date() : undefined,
                 lastStatusUpdate: new Date()
             },
             { new: true }
@@ -2999,7 +3010,7 @@ async function handleXpresPortalWebhook(req, res) {
             await ProviderAPILog.findOneAndUpdate(
                 { orderId: order._id },
                 {
-                    status: normalizedStatus === 'completed' ? 'success' : normalizedStatus === 'failed' ? 'failed' : 'processing',
+                    status: normalizedStatus === 'Completed' ? 'success' : normalizedStatus === 'Failed' ? 'failed' : 'processing',
                     responseData: body,
                     apiReference: reference || order.providerReference,
                     responseTime: new Date()
