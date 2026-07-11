@@ -870,39 +870,6 @@ app.post('/api/manual-mark-success/:transactionId', async (req, res) => {
                 // Use createPaidOrderRecords to avoid duplicate orders
                 await createPaidOrderRecords(transaction, transaction.paymentGateway);
             }
-
-                    const txRecord = new Transaction({
-                        userId: transaction.userId,
-                        storeSlug: transaction.storeSlug || null,
-                        beneficiary_phone: transaction.phoneNumber,
-                        description: `${transaction.provider} Bundle Purchase - ${transaction.phoneNumber}`,
-                        balance_before: balanceBefore,
-                        amount: transaction.totalAmount || transaction.amount,
-                        method: 'Mobile Money',
-                        status: 'complete',
-                        orderId: order._id,
-                        created: new Date()
-                    });
-                    await txRecord.save();
-
-                    await recordOrderCommission({
-                        userId: transaction.userId,
-                        order,
-                        paymentTransaction: transaction,
-                        transactionRecord: txRecord,
-                        gatewayName: transaction.paymentGateway
-                    });
-
-                    transaction.orderId = order._id;
-                    await transaction.save();
-                    console.log('✅ Order and Transaction records created via manual approval', {
-                        paymentTransactionId: transaction.transactionId,
-                        orderId: order._id.toString(),
-                        transactionRecordId: txRecord._id.toString(),
-                        paymentPhoneNumber: transaction.phoneNumber
-                    });
-                }
-            }
         } catch (recordErr) {
             console.error('⚠️ Could not create Order/Transaction records:', recordErr.message);
         }
