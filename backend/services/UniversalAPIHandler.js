@@ -5,28 +5,12 @@
 const Provider = require('../models/Provider');
 const ProviderAPILog = require('../models/ProviderAPILog');
 
-function getActiveApiConfig(provider, isUnverified = false) {
-    // If the order is for an unverified number, prefer a config flagged
-    // forUnverifiedNumbers. Fall back to the standard config if none exists.
+function getActiveApiConfig(provider) {
+    // Always use the primary apiConfig — unverified numbers are routed to
+    // WhatsApp Notifier in submitOrderToProvider, not to a secondary API config.
     const configs = Array.isArray(provider.apiConfigs) ? provider.apiConfigs : [];
-
-    if (isUnverified) {
-        // Look in the apiConfigs array first
-        const unverifiedConfig = configs.find(c => c && c.enabled && c.forUnverifiedNumbers);
-        if (unverifiedConfig) return unverifiedConfig;
-
-        // Also check the single apiConfig field
-        if (provider.apiConfig?.enabled && provider.apiConfig?.forUnverifiedNumbers) {
-            return provider.apiConfig;
-        }
-        // No dedicated unverified config found — fall through to standard config
-    }
-
-    // Standard path: first enabled config that is NOT the unverified-only config
     const standardConfig = configs.find(c => c && c.enabled && !c.forUnverifiedNumbers);
     if (standardConfig) return standardConfig;
-
-    // Fall back to the single apiConfig field (legacy / most providers)
     return provider.apiConfig?.enabled ? provider.apiConfig : null;
 }
 
@@ -77,14 +61,9 @@ class UniversalAPIHandler {
                 throw new Error(`Provider ${providerName} not found`);
             }
 
-            const isUnverified = Boolean(orderData.isUnverified);
-            const activeApiConfig = getActiveApiConfig(provider, isUnverified);
+            const activeApiConfig = getActiveApiConfig(provider);
             if (!activeApiConfig) {
                 throw new Error(`API not configured for provider ${providerName}`);
-            }
-
-            if (isUnverified && activeApiConfig.forUnverifiedNumbers) {
-                console.log(`[UniversalAPIHandler] Using unverified-number config for ${providerName}`);
             }
 
             // Build API request
@@ -147,8 +126,7 @@ class UniversalAPIHandler {
      * Build API request based on provider configuration
      */
     static buildAPIRequest(provider, orderData, activeApiConfig = null) {
-        const isUnverified = Boolean(orderData.isUnverified);
-        const config = activeApiConfig || getActiveApiConfig(provider, isUnverified) || provider.apiConfig;
+        const config = activeApiConfig || getActiveApiConfig(provider) || provider.apiConfig;
         
         // Sanitize config values to remove any problematic Unicode characters
         const sanitizedConfig = {
