@@ -653,7 +653,7 @@ async function submitOrderToProvider(order, orderData) {
             phoneNumber: orderData.phoneNumber,
             packageName: orderData.packageName,
             price: orderData.price,
-            automation: 'provider API'
+            isUnverified: orderData.isUnverified || false,
         });
 
         const provider = await Provider.findOne({ name: providerName });
