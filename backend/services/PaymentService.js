@@ -320,6 +320,23 @@ class PaymentService {
             throw new Error('Incorrect OTP. Please check the SMS and try again.');
         }
 
+        // TP13 = "External Reference is required and must be unique" — this means
+        // the transaction was already successfully processed (step 3 already ran).
+        // This happens when the customer retries verify-otp after a network error
+        // even though the server already completed it. Treat as success.
+        if (otpData.code === 'TP13' || otpData.message?.toLowerCase().includes('unique')) {
+            console.log('ℹ️ OTP retry on already-processed transaction — treating as success', { transactionId });
+            await PaymentTransaction.updateOne(
+                { transactionId },
+                { $set: { otpVerifiedAt: new Date() } }
+            );
+            return {
+                success: true,
+                message: 'Payment prompt already sent to your phone. Enter your MoMo PIN to approve.',
+                transactionId,
+            };
+        }
+
         if (String(otpData.status ?? '') !== '1') {
             throw new Error(otpData.message || otpData.code || 'OTP verification failed');
         }
@@ -349,7 +366,11 @@ class PaymentService {
             throw new Error('Payment request failed: Moolre requires a new OTP. Please start over.');
         }
 
-        if (String(payData.status ?? '') !== '1') {
+        // TP13 on step 3 = USSD push was already sent for this externalref.
+        // Treat as success — customer just needs to approve on their phone.
+        if (payData.code === 'TP13' || payData.message?.toLowerCase().includes('unique')) {
+            console.log('ℹ️ Step-3 retry on already-sent USSD push — treating as success', { transactionId });
+        } else if (String(payData.status ?? '') !== '1') {
             throw new Error(payData.message || payData.code || 'Payment request failed after OTP verification');
         }
 
