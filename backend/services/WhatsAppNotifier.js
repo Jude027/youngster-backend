@@ -173,9 +173,13 @@ async function getBrowser() {
     console.log('[WhatsApp] Launching browser...', sessionExists ? '(session found)' : '(first run — scan QR)',
         useEdge ? 'using Microsoft Edge' : 'using Puppeteer default', `session: ${_activeSessionDir}`);
 
+    // On Railway/Linux there is no display — always run headless.
+    // Locally (Windows/Mac) we run headed so the QR code is visible for first-time setup.
+    const isHeadless = process.env.NODE_ENV === 'production' || process.env.RAILWAY_ENVIRONMENT || !process.env.DISPLAY && process.platform !== 'win32' && process.platform !== 'darwin';
+
     _browser = await puppeteer.launch({
-        headless: false,
-        ...(useEdge ? { executablePath: EDGE_EXECUTABLE_PATH } : {}),
+        headless: isHeadless ? 'new' : false,
+        ...(useEdge && !isHeadless ? { executablePath: EDGE_EXECUTABLE_PATH } : {}),
         userDataDir:   _activeSessionDir,
         handleSIGINT:  false,
         handleSIGTERM: false,
