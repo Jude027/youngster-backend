@@ -503,6 +503,33 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
     if (paymentTransaction.orderId) {
         const existingOrder = await Order.findById(paymentTransaction.orderId);
         if (existingOrder) {
+            // If the order was created but never submitted to the provider, do it now.
+            // This happens when the status-poll caller fires createPaidOrderRecords
+            // after the first run already set orderId on the paymentTransaction.
+            if (!existingOrder.providerReference && existingOrder.status === 'Processing') {
+                const resolvedBeneficiaryEx = paymentTransaction.metadata?.beneficiary || paymentTransaction.phoneNumber;
+                const resolvedPackageNameEx = resolvePaymentPackageName(paymentTransaction);
+                const resolvedProviderEx = paymentTransaction.metadata?.orderProvider
+                    || paymentTransaction.metadata?.packageProvider
+                    || paymentTransaction.provider;
+                console.log('[PaidOrder] Order exists but not yet submitted to provider — submitting now', {
+                    orderId: existingOrder._id.toString(),
+                    resolvedProvider: resolvedProviderEx,
+                    isUnverified: Boolean(paymentTransaction.isUnverified || paymentTransaction.metadata?.isUnverified)
+                });
+                submitOrderToProvider(existingOrder, {
+                    phoneNumber:  resolvedBeneficiaryEx,
+                    packageName:  resolvedPackageNameEx,
+                    capacity:     deriveCapacity(resolvedPackageNameEx),
+                    price:        paymentTransaction.amount,
+                    provider:     resolvedProviderEx,
+                    network:      resolvedProviderEx,
+                    reference:    existingOrder._id.toString(),
+                    orderId:      existingOrder._id,
+                    isUnverified: Boolean(paymentTransaction.isUnverified || paymentTransaction.metadata?.isUnverified),
+                }).catch(err => console.error('[PaidOrder] Late provider submission failed:', err.message));
+            }
+
             const existingCommission = await Commission.findOne({ source: 'order', sourceId: existingOrder._id });
             if (!existingCommission) {
                 const txRecord = await Transaction.findOne({ orderId: existingOrder._id, status: { $in: ['Completed'] } });
@@ -530,7 +557,7 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
 
     // Atomically claim this transaction so concurrent calls can't both pass
     const claimed = await PaymentTransaction.findOneAndUpdate(
-        { transactionId: paymentTransaction.transactionId, orderId: { $exists: false } },
+        { transactionId: paymentTransaction.transactionId, $or: [{ orderId: { $exists: false } }, { orderId: null }] },
         { $set: { orderId: null } }, // placeholder — real orderId set below
         { new: false }
     );
