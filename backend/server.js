@@ -558,6 +558,10 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
     const storeSlug = paymentTransaction.storeSlug || paymentTransaction.metadata?.storeSlug || null;
     const clientType = paymentTransaction.clientType || paymentTransaction.metadata?.clientType || 'Customers';
     const resolvedBeneficiary = paymentTransaction.metadata?.beneficiary || paymentTransaction.phoneNumber;
+    // Use the actual package provider (e.g. "MTN", "AT Ishare") not the payment network
+    const resolvedProvider = paymentTransaction.metadata?.orderProvider
+        || paymentTransaction.metadata?.packageProvider
+        || paymentTransaction.provider;
 
     const order = new Order({
         userId,
@@ -565,8 +569,8 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
         clientType,
         beneficiary: resolvedBeneficiary,
         phoneNumber: resolvedBeneficiary,
-        package: paymentTransaction.provider,
-        providerName: paymentTransaction.provider,
+        package: resolvedProvider,
+        providerName: resolvedProvider,
         packageName: resolvedPackageName,
         bundleSize: resolvedPackageName,
         bundle_size: resolvedPackageName,
@@ -585,8 +589,8 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
         packageName:  resolvedPackageName,
         capacity:     deriveCapacity(resolvedPackageName),
         price:        paymentTransaction.amount,
-        provider:     paymentTransaction.provider,
-        network:      paymentTransaction.provider,
+        provider:     resolvedProvider,
+        network:      resolvedProvider,
         reference:    order._id.toString(),
         orderId:      order._id,
         isUnverified: Boolean(paymentTransaction.isUnverified || paymentTransaction.metadata?.isUnverified),
@@ -604,7 +608,19 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
         orderId: order._id,
         created: new Date()
     });
-    await txRecord.save();
+    try {
+        await txRecord.save();
+        console.log('[PaidOrder] Transaction record saved', {
+            transactionRecordId: txRecord._id.toString(),
+            status: txRecord.status,
+            storeSlug,
+            userId: userId?.toString()
+        });
+    } catch (txErr) {
+        console.error('[PaidOrder] Failed to save Transaction record:', txErr.message, {
+            storeSlug, userId: userId?.toString(), orderId: order._id.toString()
+        });
+    }
 
     await recordOrderCommission({
         userId,
