@@ -179,9 +179,8 @@ async function clearSession() {
 
 // ── Browser lifecycle ─────────────────────────────────────────────────────────
 // Maximum time (ms) to wait for WhatsApp Web to become ready after launch.
-// If the session is expired/corrupt, the page stalls forever — this cap ensures
-// we fail fast instead of blocking every WhatsApp order indefinitely.
-const WA_READY_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes
+// Set to 10 minutes so there's plenty of time to open /api/whatsapp/qr and scan.
+const WA_READY_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 
 async function getBrowser() {
     if (_browser && _page && _isReady) return { browser: _browser, page: _page };
