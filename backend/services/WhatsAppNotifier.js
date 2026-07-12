@@ -215,7 +215,8 @@ async function getBrowser() {
     _browser = await puppeteer.launch({
         headless: isHeadless ? 'new' : false,
         ...(useEdge && !isHeadless ? { executablePath: EDGE_EXECUTABLE_PATH } : {}),
-        userDataDir:   _activeSessionDir,
+        userDataDir:     _activeSessionDir,
+        protocolTimeout: 120000,   // 120 s — prevents Runtime.callFunctionOn timeout on slow Railway VMs
         handleSIGINT:  false,
         handleSIGTERM: false,
         handleSIGHUP:  false,
