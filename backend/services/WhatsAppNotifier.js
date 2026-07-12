@@ -25,8 +25,12 @@ const fs        = require('fs');
 
 // ── Config ────────────────────────────────────────────────────────────────────
 const EDGE_EXECUTABLE_PATH  = process.env.EDGE_EXECUTABLE_PATH || 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe';
-const SESSION_DIR           = path.join(__dirname, '../whatsapp-edge-session');
-const PENDING_FILE          = path.join(__dirname, '../whatsapp-pending-reactions.json');
+// On Railway, set WHATSAPP_SESSION_DIR to your Volume mount path (e.g. /data/whatsapp-session)
+// so the session persists across deploys. Locally it falls back to the project folder.
+const SESSION_DIR           = process.env.WHATSAPP_SESSION_DIR || path.join(__dirname, '../whatsapp-edge-session');
+const PENDING_FILE          = process.env.WHATSAPP_SESSION_DIR
+    ? path.join(process.env.WHATSAPP_SESSION_DIR, 'whatsapp-pending-reactions.json')
+    : path.join(__dirname, '../whatsapp-pending-reactions.json');
 const REACTION_POLL_MS      = Number(process.env.WHATSAPP_REACTION_POLL_MS || 2 * 60 * 1000); // 2 minutes
 const SESSION_DELETE_RETRIES = 4;
 
@@ -36,6 +40,20 @@ let _page        = null;
 let _isReady     = false;
 let _initPromise = null;  // serialises concurrent sends + reaction checks
 let _activeSessionDir = SESSION_DIR;
+
+// ── QR code store ─────────────────────────────────────────────────────────────
+// Holds the latest QR data URL so the /api/whatsapp/qr endpoint can serve it.
+let _latestQrDataUrl  = null;
+let _latestQrCapturedAt = null;
+
+function getLatestQr() {
+    return { dataUrl: _latestQrDataUrl, capturedAt: _latestQrCapturedAt };
+}
+
+function _storeQr(dataUrl) {
+    _latestQrDataUrl    = dataUrl;
+    _latestQrCapturedAt = new Date();
+}
 
 const CHAT_LIST_SELECTOR = '[data-testid="chat-list"], [aria-label="Chat list"]';
 const MESSAGE_INPUT_SELECTOR = [
@@ -263,38 +281,30 @@ async function getBrowser() {
         console.warn('[WhatsApp] Navigation warning (still waiting for chat list):', err.message);
     }
 
-    // On Railway (headless), if session is not yet established, poll for a QR code
-    // canvas and print it as ASCII to the logs so you can scan it from the dashboard.
-    if (isHeadless && !sessionExists) {
-        console.log('[WhatsApp] Headless mode — watching for QR code canvas to appear in logs...');
-        let qrPrinted = false;
-        for (let i = 0; i < 30 && !qrPrinted; i++) {
-            await sleep(2000);
+    // If no session exists, poll for the QR canvas and store it in memory
+    // so the /api/whatsapp/qr endpoint can serve it as a scannable page.
+    // Works in both headed (local) and headless (Railway) modes.
+    if (!sessionExists) {
+        _latestQrDataUrl    = null;
+        _latestQrCapturedAt = null;
+        console.log('[WhatsApp] No saved session — open  /api/whatsapp/qr  in your phone browser to scan the QR code.');
+
+        // Poll every 3 s; stop once the session is established or after 5 minutes
+        const qrPoller = setInterval(async () => {
+            if (_isReady) { clearInterval(qrPoller); return; }
             try {
-                const qrDataUrl = await _page.evaluate(() => {
-                    // WhatsApp Web renders the QR as a <canvas> element
+                const dataUrl = await _page.evaluate(() => {
                     const canvas = document.querySelector('canvas');
-                    if (!canvas) return null;
-                    return canvas.toDataURL('image/png');
+                    return canvas ? canvas.toDataURL('image/png') : null;
                 });
-                if (qrDataUrl) {
-                    // Print instructions — user can use an online base64-to-QR tool
-                    console.log('[WhatsApp] ══════════════════════════════════════════════');
-                    console.log('[WhatsApp] QR CODE DETECTED — scan it with your phone:');
-                    console.log('[WhatsApp] 1. Copy the data URL below');
-                    console.log('[WhatsApp] 2. Paste it at https://base64.guru/tools/png-to-qr');
-                    console.log('[WhatsApp] 3. Scan the QR with WhatsApp on your phone');
-                    console.log('[WhatsApp] DATA URL (first 200 chars):', qrDataUrl.substring(0, 200));
-                    console.log('[WhatsApp] FULL DATA URL:');
-                    // Print in chunks so Railway logs don't truncate it
-                    for (let j = 0; j < qrDataUrl.length; j += 500) {
-                        console.log(qrDataUrl.substring(j, j + 500));
-                    }
-                    console.log('[WhatsApp] ══════════════════════════════════════════════');
-                    qrPrinted = true;
+                if (dataUrl && dataUrl !== _latestQrDataUrl) {
+                    _storeQr(dataUrl);
+                    console.log('[WhatsApp] QR code ready — open /api/whatsapp/qr on your phone to scan it.');
                 }
-            } catch { /* keep trying */ }
-        }
+            } catch { /* page may not be ready yet */ }
+        }, 3000);
+
+        setTimeout(() => clearInterval(qrPoller), 5 * 60 * 1000);
     }
 
     console.log(`[WhatsApp] Waiting for chat list (timeout: ${WA_READY_TIMEOUT_MS / 1000}s) — scan QR if shown. Browser stays open.`);
@@ -667,4 +677,4 @@ async function notifyMtnOrder(provider, orderData) {
     }
 }
 
-module.exports = { notifyMtnOrder, sendMessage, clearSession };
+module.exports = { notifyMtnOrder, sendMessage, clearSession, getLatestQr };
