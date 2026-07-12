@@ -78,8 +78,11 @@ class PaymentService {
             // Save pending transaction record
             const transaction = new PaymentTransaction({
                 userId:         paymentData.userId,
+                storeSlug:      paymentData.storeSlug || paymentData.metadata?.storeSlug || '',
+                clientType:     paymentData.clientType || paymentData.metadata?.clientType || '',
                 paymentGateway: gatewayName,
-                provider:       paymentData.provider,
+                provider:       paymentData.orderProvider || paymentData.provider,
+                paymentNetwork: paymentData.paymentNetwork || paymentData.provider,
                 phoneNumber:    paymentData.phoneNumber,
                 amount:         paymentData.amount,
                 transactionFee: transactionFee,
@@ -89,8 +92,6 @@ class PaymentService {
                 description:    paymentData.description || `Payment for ${paymentData.provider}`,
                 packageName:    paymentData.packageName || '',
                 bundle:         paymentData.bundle_size || paymentData.bundle || '',
-                // Persist so createPaidOrderRecords can route to the right API config
-                // when the webhook fires (potentially minutes after initiation).
                 isUnverified:   Boolean(paymentData.isUnverified),
                 metadata:       {
                     ...(paymentData.metadata || {}),
@@ -99,7 +100,9 @@ class PaymentService {
                     storeSlug:       paymentData.storeSlug   || '',
                     clientType:      paymentData.clientType  || '',
                     packageProvider: paymentData.packageProvider || paymentData.provider || '',
+                    orderProvider:   paymentData.orderProvider  || paymentData.provider || '',
                     isUnverified:    Boolean(paymentData.isUnverified),
+                    guestSessionId:  paymentData.guestSessionId || null,
                 }
             });
             await transaction.save();
