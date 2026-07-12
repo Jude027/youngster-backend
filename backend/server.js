@@ -503,9 +503,39 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
     if (paymentTransaction.orderId) {
         const existingOrder = await Order.findById(paymentTransaction.orderId);
         if (existingOrder) {
+            // Ensure a Transaction record exists for this order — if it was missed
+            // on the first run (e.g. due to a race or error), create it now.
+            const existingTx = await Transaction.findOne({ orderId: existingOrder._id });
+            if (!existingTx) {
+                const fallbackUserId = paymentTransaction.userId || existingOrder.userId;
+                const fallbackStoreSlug = paymentTransaction.storeSlug
+                    || paymentTransaction.metadata?.storeSlug
+                    || existingOrder.storeSlug || null;
+                const fallbackBeneficiary = paymentTransaction.metadata?.beneficiary
+                    || paymentTransaction.phoneNumber;
+                try {
+                    await Transaction.create({
+                        userId:            fallbackUserId,
+                        storeSlug:         fallbackStoreSlug,
+                        beneficiary_phone: paymentTransaction.phoneNumber,
+                        description:       `${paymentTransaction.provider} Bundle Purchase - ${fallbackBeneficiary}`,
+                        balance_before:    0,
+                        amount:            paymentTransaction.totalAmount || paymentTransaction.amount,
+                        method:            'Mobile Money',
+                        status:            'Completed',
+                        orderId:           existingOrder._id,
+                        guestSessionId:    paymentTransaction.metadata?.guestSessionId || null,
+                        created:           new Date(),
+                    });
+                    console.log('[PaidOrder] Late Transaction record created for existing order', {
+                        orderId: existingOrder._id.toString()
+                    });
+                } catch (txErr) {
+                    console.error('[PaidOrder] Failed to create late Transaction record:', txErr.message);
+                }
+            }
+
             // If the order was created but never submitted to the provider, do it now.
-            // This happens when the status-poll caller fires createPaidOrderRecords
-            // after the first run already set orderId on the paymentTransaction.
             if (!existingOrder.providerReference && existingOrder.status === 'Processing') {
                 const resolvedBeneficiaryEx = paymentTransaction.metadata?.beneficiary || paymentTransaction.phoneNumber;
                 const resolvedPackageNameEx = resolvePaymentPackageName(paymentTransaction);
@@ -532,7 +562,7 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
 
             const existingCommission = await Commission.findOne({ source: 'order', sourceId: existingOrder._id });
             if (!existingCommission) {
-                const txRecord = await Transaction.findOne({ orderId: existingOrder._id, status: { $in: ['Completed'] } });
+                const txRecord = await Transaction.findOne({ orderId: existingOrder._id, status: 'Completed' });
                 await recordOrderCommission({
                     userId: paymentTransaction.userId || existingOrder.userId,
                     order: existingOrder,
@@ -633,6 +663,7 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
         method: 'Mobile Money',
         status: 'Completed',
         orderId: order._id,
+        guestSessionId: paymentTransaction.metadata?.guestSessionId || null,
         created: new Date()
     });
     try {
