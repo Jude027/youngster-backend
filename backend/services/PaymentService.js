@@ -533,7 +533,7 @@ class PaymentService {
 
                             // Auto-create the order when payment is confirmed
                             try {
-                                const Order = require('./models/Order');
+                                const Order = require('../models/Order');
                                 const existingOrder = await Order.findOne({ transactionId });
                                 if (!existingOrder) {
                                     const beneficiary = transaction.metadata?.beneficiary
