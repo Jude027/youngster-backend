@@ -364,7 +364,7 @@ async function resolveOriginalPackagePrice({ userId, provider, packageName, clie
 
 async function recordOrderCommission({ userId, order, paymentTransaction, transactionRecord, gatewayName }) {
     const transactionStatus = normalizeText(transactionRecord?.status || paymentTransaction?.status);
-    if (!['complete', 'completed', 'success'].includes(transactionStatus)) return null;
+    if (!['completed', 'success'].includes(transactionStatus)) return null;
 
     const clientPaid = Number(paymentTransaction?.amount ?? order?.amount ?? transactionRecord?.amount ?? 0);
     if (!Number.isFinite(clientPaid) || clientPaid <= 0) return null;
@@ -505,7 +505,7 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
         if (existingOrder) {
             const existingCommission = await Commission.findOne({ source: 'order', sourceId: existingOrder._id });
             if (!existingCommission) {
-                const txRecord = await Transaction.findOne({ orderId: existingOrder._id, status: { $in: ['complete', 'completed'] } });
+                const txRecord = await Transaction.findOne({ orderId: existingOrder._id, status: { $in: ['Completed'] } });
                 await recordOrderCommission({
                     userId: paymentTransaction.userId || existingOrder.userId,
                     order: existingOrder,
@@ -589,7 +589,7 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
         network:      paymentTransaction.provider,
         reference:    order._id.toString(),
         orderId:      order._id,
-        isUnverified: Boolean(paymentTransaction.isUnverified),
+        isUnverified: Boolean(paymentTransaction.isUnverified || paymentTransaction.metadata?.isUnverified),
     }).catch(err => console.error('Provider submission failed:', err.message));
 
     const txRecord = new Transaction({
@@ -600,7 +600,7 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
         balance_before: balanceBefore,
         amount: paymentTransaction.totalAmount || paymentTransaction.amount,
         method: 'Mobile Money',
-        status: 'complete',
+        status: 'Completed',
         orderId: order._id,
         created: new Date()
     });
@@ -2785,7 +2785,7 @@ const handleWebhookCallback = async (req, res) => {
                                 balance_before: balanceBefore,
                                 amount: paymentTransaction.totalAmount || paymentTransaction.amount,
                                 method: 'Mobile Money',
-                                status: 'complete',
+                                status: 'Completed',
                                 orderId: order._id,
                                 created: new Date()
                             });
