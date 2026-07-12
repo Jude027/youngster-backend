@@ -551,7 +551,7 @@ class PaymentService {
                                         package:       orderProvider,
                                         bundle_size:   transaction.metadata?.bundle_size || transaction.description,
                                         amount:        transaction.amount,
-                                        status:        'pending',
+                                        status:        'Processing',
                                         transactionId,
                                         created:       new Date(),
                                     });
