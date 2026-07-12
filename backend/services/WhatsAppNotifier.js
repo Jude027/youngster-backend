@@ -73,6 +73,29 @@ function uniqueSessionDir() {
 async function removeSessionDir(dir) {
     if (!fs.existsSync(dir)) return true;
 
+    // On Railway, SESSION_DIR is a Volume mount point — we cannot rmdir or rename it.
+    // Deleting only the CONTENTS is safe and achieves the same effect (fresh session).
+    const isVolumeMount = dir === SESSION_DIR;
+
+    if (isVolumeMount) {
+        try {
+            const entries = fs.readdirSync(dir);
+            for (const entry of entries) {
+                try {
+                    fs.rmSync(path.join(dir, entry), { recursive: true, force: true });
+                } catch (e) {
+                    console.warn(`[WhatsApp] Could not remove session entry ${entry}:`, e.message);
+                }
+            }
+            console.log('[WhatsApp] Session contents cleared — next launch will show QR code.');
+            return true;
+        } catch (err) {
+            console.warn('[WhatsApp] Failed to clear session contents:', err.message);
+            return false;
+        }
+    }
+
+    // Non-mount directories (temp session dirs) can be fully removed
     for (let attempt = 1; attempt <= SESSION_DELETE_RETRIES; attempt++) {
         try {
             fs.rmSync(dir, { recursive: true, force: true, maxRetries: 2, retryDelay: 500 });
@@ -124,22 +147,17 @@ async function clearSession() {
         _page    = null;
         _isReady = false;
     }
-    // Delete the Edge session directory so the next launch shows a fresh QR
+    // Always reset to the primary session dir — removeSessionDir clears only
+    // the CONTENTS when dir === SESSION_DIR (Railway Volume mount point).
     _activeSessionDir = SESSION_DIR;
-    if (fs.existsSync(SESSION_DIR)) {
-        const cleared = await removeSessionDir(SESSION_DIR);
-        if (!cleared) {
-            _activeSessionDir = uniqueSessionDir();
-            console.warn('[WhatsApp] Fresh session path selected:', _activeSessionDir);
-        }
-        console.log('[WhatsApp] Session directory cleared — next launch will show QR code.');
-    }
-    // Also clear the regular session dir if present
+    await removeSessionDir(SESSION_DIR);
+    // Also clear the legacy session dir if present
     const altSession = path.join(__dirname, '../whatsapp-session');
     if (fs.existsSync(altSession)) {
         await removeSessionDir(altSession);
     }
 }
+
 
 // ── Browser lifecycle ─────────────────────────────────────────────────────────
 // Maximum time (ms) to wait for WhatsApp Web to become ready after launch.
