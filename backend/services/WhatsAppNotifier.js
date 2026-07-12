@@ -192,10 +192,10 @@ async function getBrowser() {
             await _page.waitForSelector(CHAT_LIST_SELECTOR, { timeout: WA_READY_TIMEOUT_MS });
             _isReady = true;
         } catch {
-            // Timed out — session is likely stale; reset so next call tries fresh
-            console.error('[WhatsApp] Timed out waiting for chat list — clearing session for fresh QR on next attempt.');
-            await clearSession();
-            throw new Error('WhatsApp session expired or not logged in. Please scan the QR code — the server will show a browser window on the next order.');
+            // Timed out — do NOT clear the session; keep the browser alive so
+            // /api/whatsapp/qr keeps serving the QR and a retry works without relaunching.
+            console.error('[WhatsApp] Timed out waiting for chat list — browser stays open. Open /api/whatsapp/qr and scan the QR, then retry the order.');
+            throw new Error('WhatsApp QR not scanned in time. Open /api/whatsapp/qr on your phone, scan the code, then retry the order.');
         }
         return { browser: _browser, page: _page };
     }
@@ -306,14 +306,15 @@ async function getBrowser() {
         setTimeout(() => clearInterval(qrPoller), 5 * 60 * 1000);
     }
 
-    console.log(`[WhatsApp] Waiting for chat list (timeout: ${WA_READY_TIMEOUT_MS / 1000}s) — scan QR if shown. Browser stays open.`);
+    console.log(`[WhatsApp] Waiting for chat list (up to ${WA_READY_TIMEOUT_MS / 60000} min) — open /api/whatsapp/qr on your phone to scan.`);
     try {
         await _page.waitForSelector(CHAT_LIST_SELECTOR, { timeout: WA_READY_TIMEOUT_MS });
     } catch (err) {
-        // Session stale or QR never scanned — clear so next attempt shows fresh QR
-        console.error('[WhatsApp] Timed out waiting for WhatsApp to load. Clearing session so next attempt shows a fresh QR code.');
-        await clearSession();
-        throw new Error('WhatsApp not logged in — session cleared. A fresh QR code will appear on the next order. Please scan it.');
+        // Timed out — do NOT clear the session or kill the browser.
+        // The QR poller is still running; /api/whatsapp/qr will keep refreshing.
+        // Next order retry will reuse the open browser and wait again.
+        console.error('[WhatsApp] Timed out waiting for QR scan. Browser stays open — scan /api/whatsapp/qr then retry.');
+        throw new Error('WhatsApp QR not scanned in time. Open /api/whatsapp/qr on your phone, scan the code, then retry the order.');
     }
 
     _isReady = true;
