@@ -1914,7 +1914,62 @@ app.delete('/api/admin/providers/:name', auth, admin, async (req, res) => {
     }
 });
 
-// ==================== WHATSAPP SESSION MANAGEMENT ====================
+// ==================== WHATSAPP QR CODE PAGE ====================
+// Open this URL on your phone browser to scan the WhatsApp QR code.
+// On Railway: https://<your-app>.up.railway.app/api/whatsapp/qr
+// The page auto-refreshes every 5 s so it tracks rotating QR codes.
+app.get('/api/whatsapp/qr', (req, res) => {
+    const { getLatestQr } = require('./services/WhatsAppNotifier');
+    const { dataUrl, capturedAt } = getLatestQr();
+
+    const age = capturedAt
+        ? Math.round((Date.now() - capturedAt.getTime()) / 1000)
+        : null;
+
+    // Build the public URL so the page can display it for easy copy
+    const proto = req.headers['x-forwarded-proto'] || req.protocol || 'https';
+    const host  = req.headers['x-forwarded-host'] || req.headers.host || '';
+    const publicUrl = `${proto}://${host}/api/whatsapp/qr`;
+
+    const imgHtml = dataUrl
+        ? `<img src="${dataUrl}" alt="WhatsApp QR Code" style="width:300px;height:300px;display:block;margin:0 auto 16px;" />`
+        : `<p style="text-align:center;color:#888;font-size:18px;margin-bottom:16px;">⏳ Waiting for QR code…<br><small>Make sure a WhatsApp order has been triggered so the browser launches.</small></p>`;
+
+    const statusLine = capturedAt
+        ? `<p style="text-align:center;color:#555;font-size:13px;">QR captured ${age}s ago — refreshing every 5 s</p>`
+        : `<p style="text-align:center;color:#555;font-size:13px;">Refreshing every 5 s…</p>`;
+
+    res.setHeader('Content-Type', 'text/html');
+    res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>WhatsApp QR Code</title>
+  <meta http-equiv="refresh" content="5" />
+  <style>
+    body { font-family: sans-serif; background: #f0f0f0; display: flex;
+           align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
+    .card { background: #fff; border-radius: 16px; padding: 32px 24px;
+            box-shadow: 0 4px 24px rgba(0,0,0,.12); max-width: 380px; width: 100%; }
+    h2 { text-align: center; color: #128C7E; margin: 0 0 24px; }
+    .url-box { background:#f6f6f6; border-radius:8px; padding:8px 12px;
+               font-size:12px; word-break:break-all; color:#444; margin-bottom:16px; text-align:center; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>📱 Scan with WhatsApp</h2>
+    ${imgHtml}
+    ${statusLine}
+    ${dataUrl ? '<p style="text-align:center;color:#128C7E;font-size:14px;">WhatsApp → Linked Devices → Link a Device → Scan this QR</p>' : ''}
+    <div class="url-box">🔗 ${publicUrl}</div>
+  </div>
+</body>
+</html>`);
+});
+
+
 app.post('/api/admin/whatsapp/reset-session', auth, admin, async (req, res) => {
     try {
         const { clearSession } = require('./services/WhatsAppNotifier');
