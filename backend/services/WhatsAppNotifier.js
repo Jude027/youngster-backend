@@ -644,10 +644,10 @@ async function notifyMtnOrder(provider, orderData) {
         try {
             await sendMessage(ownerDigits, message, orderId, ownerDigits);
         } catch (err) {
-            const shouldRetryWithFreshSession = /session expired|not logged in|session cleared|EPERM|EBUSY/i.test(err.message);
+            const shouldRetryWithFreshSession = /session expired|not logged in|session cleared|EPERM|EBUSY|protocolTimeout|callFunctionOn timed out/i.test(err.message);
             if (!shouldRetryWithFreshSession) throw err;
 
-            console.warn('[WhatsApp] Send failed because the browser session is stale or locked. Resetting session and retrying once:', err.message);
+            console.warn('[WhatsApp] Send failed — resetting browser and retrying once:', err.message);
             await clearSession();
             await sendMessage(ownerDigits, message, orderId, ownerDigits);
         }
