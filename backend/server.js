@@ -1493,8 +1493,8 @@ app.post('/api/admin/base-prices/bulk', auth, admin, async (req, res) => {
 
 // ==================== DASHBOARD STATIC FILES ====================
 // Frontend is served by a separate Railway service — only redirect here.
-const DASHBOARD_DIR = process.env.DASHBOARD_DIR || 'C:\\Users\\juded\\Downloads\\My Store\\Dashboard';
-const ADMIN_DIR = process.env.ADMIN_DIR || 'C:\\Users\\juded\\Downloads\\My Store\\Admin';
+const DASHBOARD_DIR = process.env.DASHBOARD_DIR || path.join(__dirname, '../Dashboard');
+const ADMIN_DIR = process.env.ADMIN_DIR || path.join(__dirname, '../Admin');
 
 // Only mount static middleware if the directory actually exists (local dev only)
 const fs_sync = require('fs');
@@ -1541,7 +1541,7 @@ app.get('/api/storefront/:slug', async (req, res) => {
         res.setHeader('Pragma', 'no-cache');
         res.setHeader('Expires', '0');
 
-        const { slug } = req.params;
+        const slug = (req.params.slug || '').toLowerCase();
         const store = await StoreSettings.findOne({
             $or: [{ storeSlug: slug }, { previousSlugs: slug }]
         });
