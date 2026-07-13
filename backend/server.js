@@ -91,7 +91,7 @@ app.use(cors({
         return callback(new Error('CORS not allowed'));
     },
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Cache-Control', 'Pragma'],
     credentials: true
 }));
 app.use(express.json({ limit: '10mb' }));
