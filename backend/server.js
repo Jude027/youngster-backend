@@ -584,10 +584,68 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
     // Check by transactionId — catches the race where orderId isn't stamped yet
     const existingByTxn = await Order.findOne({ transactionId: paymentTransaction.transactionId });
     if (existingByTxn) {
-        console.log('[PaidOrder] Order already exists for transactionId — skipping duplicate creation', {
+        console.log('[PaidOrder] Order already exists for transactionId — checking for missing Transaction record', {
             transactionId: paymentTransaction.transactionId,
             existingOrderId: existingByTxn._id
         });
+
+        // Create Transaction record if it was never saved (PaymentService auto-create
+        // only creates the Order, not the Transaction).
+        const existingTx = await Transaction.findOne({ orderId: existingByTxn._id });
+        if (!existingTx) {
+            const fallbackUserId   = paymentTransaction.userId || existingByTxn.userId;
+            const fallbackStoreSlug = paymentTransaction.storeSlug
+                || paymentTransaction.metadata?.storeSlug
+                || existingByTxn.storeSlug || null;
+            const fallbackBeneficiary = paymentTransaction.metadata?.beneficiary
+                || paymentTransaction.phoneNumber;
+            try {
+                await Transaction.create({
+                    userId:            fallbackUserId,
+                    storeSlug:         fallbackStoreSlug,
+                    beneficiary_phone: paymentTransaction.phoneNumber,
+                    description:       `${paymentTransaction.provider} Bundle Purchase - ${fallbackBeneficiary}`,
+                    balance_before:    0,
+                    amount:            paymentTransaction.totalAmount || paymentTransaction.amount,
+                    method:            'Mobile Money',
+                    status:            'Completed',
+                    orderId:           existingByTxn._id,
+                    guestSessionId:    paymentTransaction.metadata?.guestSessionId || null,
+                    created:           new Date(),
+                });
+                console.log('[PaidOrder] Transaction record created for existing order', {
+                    orderId: existingByTxn._id.toString(),
+                    storeSlug: fallbackStoreSlug,
+                    userId: fallbackUserId?.toString()
+                });
+            } catch (txErr) {
+                console.error('[PaidOrder] Failed to create Transaction record:', txErr.message);
+            }
+        }
+
+        // Submit to provider if not yet done
+        if (!existingByTxn.providerReference && existingByTxn.status === 'Processing') {
+            const resolvedBeneficiaryEx = paymentTransaction.metadata?.beneficiary || paymentTransaction.phoneNumber;
+            const resolvedPackageNameEx = resolvePaymentPackageName(paymentTransaction);
+            const resolvedProviderEx    = paymentTransaction.metadata?.orderProvider
+                || paymentTransaction.metadata?.packageProvider
+                || paymentTransaction.provider;
+            console.log('[PaidOrder] Submitting existing order to provider', {
+                orderId: existingByTxn._id.toString(), resolvedProviderEx
+            });
+            submitOrderToProvider(existingByTxn, {
+                phoneNumber:  resolvedBeneficiaryEx,
+                packageName:  resolvedPackageNameEx,
+                capacity:     deriveCapacity(resolvedPackageNameEx),
+                price:        paymentTransaction.amount,
+                provider:     resolvedProviderEx,
+                network:      resolvedProviderEx,
+                reference:    existingByTxn._id.toString(),
+                orderId:      existingByTxn._id,
+                isUnverified: Boolean(paymentTransaction.isUnverified || paymentTransaction.metadata?.isUnverified),
+            }).catch(err => console.error('[PaidOrder] Provider submission failed:', err.message));
+        }
+
         return existingByTxn._id;
     }
 
