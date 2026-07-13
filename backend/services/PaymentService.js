@@ -548,26 +548,11 @@ class PaymentService {
                                 const Order = require('../models/Order');
                                 const existingOrder = await Order.findOne({ transactionId });
                                 if (!existingOrder) {
-                                    const beneficiary = transaction.metadata?.beneficiary
-                                        || transaction.phoneNumber;
-                                    // Use packageProvider (the actual data network, e.g. "AT Ishare")
-                                    // rather than transaction.provider (the MoMo payment network,
-                                    // e.g. "MTN") — they differ when paying cross-network.
-                                    const orderProvider = transaction.metadata?.packageProvider
-                                        || transaction.provider;
-                                    await Order.create({
-                                        userId:        transaction.userId || null,
-                                        storeSlug:     transaction.storeSlug || null,
-                                        beneficiary,
-                                        phoneNumber:   beneficiary,
-                                        package:       orderProvider,
-                                        bundle_size:   transaction.metadata?.bundle_size || transaction.description,
-                                        amount:        transaction.amount,
-                                        status:        'Processing',
-                                        transactionId,
-                                        created:       new Date(),
-                                    });
-                                    console.log('✅ Order auto-created for transaction', transactionId, { orderProvider });
+                                    // Order creation is handled by createPaidOrderRecords in server.js
+                                    // which also creates the Transaction record. Don't create here
+                                    // to avoid the race where createPaidOrderRecords finds the order
+                                    // already exists and skips the Transaction save.
+                                    console.log('ℹ️ Order will be created by createPaidOrderRecords', transactionId);
                                 }
                             } catch (orderErr) {
                                 console.warn('⚠️ Could not auto-create order:', orderErr.message);
