@@ -1510,7 +1510,8 @@ const FRONTEND_BASE = process.env.FRONTEND_URL || 'https://youngster-frontend-pr
 app.get('/referral/:slug', (req, res) => {
     // On Railway the frontend is a separate service — redirect there with the store slug
     if (!fs_sync.existsSync(DASHBOARD_DIR)) {
-        return res.redirect(302, `${FRONTEND_BASE}/Dashboard/dashboard2.html?store=${encodeURIComponent(req.params.slug)}`);
+        const client = req.query.client ? `&client=${encodeURIComponent(req.query.client)}` : '';
+        return res.redirect(302, `${FRONTEND_BASE}/Dashboard/dashboard2.html?store=${encodeURIComponent(req.params.slug)}${client}`);
     }
     const filePath = path.resolve(DASHBOARD_DIR, 'dashboard2.html');
     console.log('Serving:', filePath, '| Exists:', fs_sync.existsSync(filePath));
