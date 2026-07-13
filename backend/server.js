@@ -495,13 +495,19 @@ async function recordOrderCommission({ userId, order, paymentTransaction, transa
 async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentTransaction.paymentGateway) {
     if (!paymentTransaction) return null;
 
+    const txId = paymentTransaction.transactionId || paymentTransaction._id?.toString();
+    console.log('[PaidOrder] createPaidOrderRecords called', {
+        txId,
+        orderId: paymentTransaction.orderId?.toString() || null,
+        status:  paymentTransaction.status,
+    });
+
     // ── Duplicate guard ───────────────────────────────────────────────────────
-    // Multiple callers (webhook + status poll) may fire simultaneously.
-    // Use a transactionId-based lock stored on the PaymentTransaction itself:
-    // stamp orderId = 'pending' before doing any work, then check it at entry.
-    // Also check by transactionId on the Order collection as a second guard.
     if (paymentTransaction.orderId) {
         const existingOrder = await Order.findById(paymentTransaction.orderId);
+        console.log('[PaidOrder] orderId guard —', existingOrder ? 'order found' : 'order NOT found', {
+            orderId: paymentTransaction.orderId?.toString()
+        });
         if (existingOrder) {
             // Ensure a Transaction record exists for this order — if it was missed
             // on the first run (e.g. due to a race or error), create it now.
@@ -591,6 +597,9 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
         { $set: { orderId: null } }, // placeholder — real orderId set below
         { new: false }
     );
+    console.log('[PaidOrder] Claim result:', claimed ? 'claimed OK' : 'ALREADY CLAIMED — skipping', {
+        transactionId: paymentTransaction.transactionId
+    });
     if (!claimed) {
         // Another call already claimed it — wait briefly then return the created order
         await new Promise(r => setTimeout(r, 800));
@@ -1013,10 +1022,10 @@ app.get('/api/orders', async (req, res) => {
         if (userId) {
             // Fetch orders belonging to this dealer — either directly (wallet orders)
             // or placed on their storefront (storeSlug orders)
-            const storeSettings = await StoreSettings.findOne({ userId }).lean();
-            const storeSlug = storeSettings?.storeSlug;
-            query = storeSlug
-                ? { $or: [{ userId }, { storeSlug }] }
+            const allStoreSettings = await StoreSettings.find({ userId }).lean();
+            const storeSlugs = allStoreSettings.map(s => s.storeSlug).filter(Boolean);
+            query = storeSlugs.length
+                ? { $or: [{ userId }, { storeSlug: { $in: storeSlugs } }] }
                 : { userId };
         } else if (req.query.storeSlug) {
             query = { storeSlug: req.query.storeSlug };
@@ -1120,12 +1129,16 @@ app.get('/api/transactions', async (req, res) => {
 
         let query = {};
         if (userId) {
-            // Fetch transactions for this dealer — direct and storefront-placed
-            const storeSettings = await StoreSettings.findOne({ userId }).lean();
-            const storeSlug = storeSettings?.storeSlug;
-            query = storeSlug
-                ? { $or: [{ userId }, { storeSlug }] }
-                : { userId };
+            // Fetch transactions for this dealer — direct (userId) and storefront-placed (storeSlug).
+            // Also look up all storeSlug values associated with this dealer's StoreSettings
+            // so transactions saved with storeSlug but a different userId still appear.
+            const allStoreSettings = await StoreSettings.find({ userId }).lean();
+            const storeSlugs = allStoreSettings.map(s => s.storeSlug).filter(Boolean);
+            if (storeSlugs.length) {
+                query = { $or: [{ userId }, { storeSlug: { $in: storeSlugs } }] };
+            } else {
+                query = { userId };
+            }
         } else if (req.query.storeSlug) {
             query = { storeSlug: req.query.storeSlug };
         }
