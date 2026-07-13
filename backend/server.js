@@ -1492,16 +1492,29 @@ app.post('/api/admin/base-prices/bulk', auth, admin, async (req, res) => {
 });
 
 // ==================== DASHBOARD STATIC FILES ====================
-const DASHBOARD_DIR = 'C:\\Users\\juded\\Downloads\\My Store\\Dashboard';
-const ADMIN_DIR = 'C:\\Users\\juded\\Downloads\\My Store\\Admin';
-app.use('/Dashboard', express.static(DASHBOARD_DIR, { index: false, redirect: false }));
-app.use('/Admin', express.static(ADMIN_DIR, { index: false, redirect: false }));
+// Frontend is served by a separate Railway service — only redirect here.
+const DASHBOARD_DIR = process.env.DASHBOARD_DIR || 'C:\\Users\\juded\\Downloads\\My Store\\Dashboard';
+const ADMIN_DIR = process.env.ADMIN_DIR || 'C:\\Users\\juded\\Downloads\\My Store\\Admin';
+
+// Only mount static middleware if the directory actually exists (local dev only)
+const fs_sync = require('fs');
+if (fs_sync.existsSync(DASHBOARD_DIR)) {
+    app.use('/Dashboard', express.static(DASHBOARD_DIR, { index: false, redirect: false }));
+}
+if (fs_sync.existsSync(ADMIN_DIR)) {
+    app.use('/Admin', express.static(ADMIN_DIR, { index: false, redirect: false }));
+}
+
+const FRONTEND_BASE = process.env.FRONTEND_URL || 'https://youngster-frontend-production.up.railway.app';
 
 app.get('/referral/:slug', (req, res) => {
-    const fs = require('fs');
+    // On Railway the frontend is a separate service — redirect there with the store slug
+    if (!fs_sync.existsSync(DASHBOARD_DIR)) {
+        return res.redirect(302, `${FRONTEND_BASE}/Dashboard/dashboard2.html?store=${encodeURIComponent(req.params.slug)}`);
+    }
     const filePath = path.resolve(DASHBOARD_DIR, 'dashboard2.html');
-    console.log('Serving:', filePath, '| Exists:', fs.existsSync(filePath));
-    if (!fs.existsSync(filePath)) {
+    console.log('Serving:', filePath, '| Exists:', fs_sync.existsSync(filePath));
+    if (!fs_sync.existsSync(filePath)) {
         return res.status(404).send('File not found: ' + filePath);
     }
     res.sendFile(filePath, function (err) {
@@ -1513,7 +1526,7 @@ app.get('/referral/:slug', (req, res) => {
 app.get('/Dashboard/dashboard2', (req, res) => {
     const store = req.query.store;
     if (store) res.redirect(302, '/referral/' + encodeURIComponent(store));
-    else res.sendFile('dashboard2.html', { root: DASHBOARD_DIR });
+    else res.redirect(302, `${FRONTEND_BASE}/Dashboard/dashboard2.html`);
 });
 
 // ==================== PUBLIC STOREFRONT ROUTE ====================
