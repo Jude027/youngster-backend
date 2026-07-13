@@ -2748,7 +2748,12 @@ app.get('/api/payment/status/:transactionId', async (req, res) => {
 
         const result = await PaymentService.checkPaymentStatus(txId);
         if (result.success && result.status === 'success' && result.transaction) {
-            await createPaidOrderRecords(result.transaction, result.transaction.paymentGateway);
+            // Reload as a live Mongoose document — result.transaction is a plain
+            // object from PaymentService and .save() / field checks won't work on it.
+            const liveTx = await PaymentTransaction.findOne({ transactionId: txId });
+            if (liveTx) {
+                await createPaidOrderRecords(liveTx, liveTx.paymentGateway);
+            }
         }
 
         console.log('📍 Result from checkPaymentStatus:', JSON.stringify(result, null, 2));
