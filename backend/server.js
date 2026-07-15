@@ -2738,9 +2738,15 @@ app.post('/api/payment/verify-beneficiary', async (req, res) => {
             return res.status(500).json({ success: false, message: 'Verification service is not configured' });
         }
 
-        const baseUrl = activeApiConfig?.baseUrl
+        let baseUrl = activeApiConfig?.baseUrl
             ? String(activeApiConfig.baseUrl).replace(/\/+$/, '')
             : 'https://www.xpresportal.app/api/v1';
+
+        // XpresPortal API base path must include '/api/v1'.
+        // If baseUrl is set to the root domain 'https://www.xpresportal.app', append '/api/v1'.
+        if (baseUrl.includes('xpresportal') && !baseUrl.includes('/api/v1')) {
+            baseUrl += '/api/v1';
+        }
 
         console.log('[VerifyBeneficiary] Using XpresPortal endpoint:', baseUrl, '| key preview:', `${String(apiKey).slice(0, 4)}...${String(apiKey).slice(-2)}`);
 
