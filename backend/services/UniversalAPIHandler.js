@@ -357,7 +357,11 @@ class UniversalAPIHandler {
     static buildHeaders(config) {
         const headers = {
             'Content-Type': 'application/json',
-            'Accept': 'application/json'
+            'Accept': 'application/json',
+            // Some APIs (XpresPortal, DataHub) restrict keys by domain and reject
+            // requests without an Origin header from backend servers.
+            'Origin': process.env.BACKEND_ORIGIN || 'https://youngster-backend-production.up.railway.app',
+            'Referer': process.env.BACKEND_ORIGIN || 'https://youngster-backend-production.up.railway.app',
         };
         const authMethod = String(config.authMethod || config.type || '').toLowerCase();
 
