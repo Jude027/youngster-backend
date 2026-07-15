@@ -141,9 +141,9 @@ class UniversalAPIHandler {
             dataField: this.sanitizeString(config.dataField || '')
         };
         
-        // Build full URL
-        const baseUrl = this.cleanBaseUrl(sanitizedConfig.baseUrl);
-        const endpoint = this.cleanEndpoint(sanitizedConfig.orderEndpoint);
+        // Build full URL — strip trailing slash from base, ensure leading slash on endpoint
+        const baseUrl  = sanitizedConfig.baseUrl.trim().replace(/\/+$/, '');
+        const endpoint = ('/' + sanitizedConfig.orderEndpoint.trim().replace(/^\/+/, ''));
         const url = `${baseUrl}${endpoint}`;
         
         // Map order data to API payload
@@ -357,16 +357,18 @@ class UniversalAPIHandler {
     static buildHeaders(config) {
         const headers = {
             'Content-Type': 'application/json',
-            'Accept': 'application/json'
+            'Accept': 'application/json',
+            // Some APIs (e.g. XpresPortal) restrict keys by domain and require
+            // an Origin header when called from a backend server.
+            'Origin': process.env.BACKEND_URL || 'https://youngster-backend-production.up.railway.app',
+            'Referer': process.env.BACKEND_URL || 'https://youngster-backend-production.up.railway.app',
         };
-        const authMethod = String(config.authMethod || config.type || '').toLowerCase();
+        const authMethod = String(config.authMethod || '').toLowerCase();
 
-        // Support header auth, api-key auth, bearer-token auth, and fallback
+        // Support both header auth and api-key auth
         if (
             (authMethod === 'header' ||
-            authMethod === 'api-key' ||
-            authMethod === 'bearer-token' ||
-            !authMethod) &&
+            authMethod === 'api-key') &&
             config.authHeaderName &&
             config.authHeaderValue
         ) {
@@ -400,28 +402,6 @@ class UniversalAPIHandler {
     }
     
     /**
-     * Clean base URL by removing trailing commas and slashes
-     */
-    static cleanBaseUrl(url) {
-        if (typeof url !== 'string') return '';
-        return url.trim().replace(/,+$/, '').replace(/\/+$/, '');
-    }
-    
-    /**
-     * Clean endpoint by trimming, removing duplicate slashes, and ensuring a leading slash
-     */
-    static cleanEndpoint(endpoint) {
-        if (typeof endpoint !== 'string') return '';
-        let cleaned = endpoint.trim();
-        if (!cleaned) return '';
-        cleaned = cleaned.replace(/^\/+/, '/');
-        if (!cleaned.startsWith('/')) {
-            cleaned = '/' + cleaned;
-        }
-        return cleaned;
-    }
-    
-    /**
      * Send HTTP request to external API
      */
     static async sendAPIRequest(apiRequest) {
@@ -446,17 +426,12 @@ class UniversalAPIHandler {
         
         try {
             const response = await fetch(apiRequest.url, options);
-            const text = await response.text();
-            let data = {};
-            try {
-                data = JSON.parse(text);
-            } catch (_) {}
+            const data = await response.json().catch(() => ({}));
             
             return {
                 status: response.status,
                 headers: response.headers,
-                body: data,
-                text: text
+                body: data
             };
         } catch (error) {
             console.error('[UniversalAPIHandler] sendAPIRequest failed:', error.message);
@@ -557,19 +532,19 @@ class UniversalAPIHandler {
                 throw new Error('Provider or status endpoint not configured');
             }
 
-            const baseUrl = this.cleanBaseUrl(config.baseUrl);
+            const baseUrl  = config.baseUrl.trim().replace(/\/+$/, '');
             const endpoint = config.statusEndpoint
+                .trim()
                 .replace(':reference', reference)
-                .replace(':identifier', reference);            
-            const endpointWithSlash = this.cleanEndpoint(endpoint);
-            const url = `${baseUrl}${endpointWithSlash}`;
+                .replace(':identifier', reference);
+            const url = `${baseUrl}/${endpoint.replace(/^\/+/, '')}`;
 
             const headers = this.buildHeaders(config);
             
             console.log('STATUS REQUEST', {
                 url,
                 reference,
-                headers: { ...headers, [config.authHeaderName]: '***' }
+                headers
             });
 
             const response = await fetch(url, {
@@ -577,16 +552,7 @@ class UniversalAPIHandler {
                 headers
             });
 
-            const text = await response.text();
-            let data = {};
-            try {
-                data = JSON.parse(text);
-            } catch (e) {
-                return {
-                    success: false,
-                    message: `API returned status ${response.status}: ${text.slice(0, 200)}`
-                };
-            }
+            const data = await response.json();
             
             return this.parseAPIResponse(provider, { status: response.status, body: data }, config);
         } catch (error) {
@@ -620,44 +586,20 @@ class UniversalAPIHandler {
                 };
             }
 
-            const baseUrl = this.cleanBaseUrl(config.baseUrl);
-            const endpoint = this.cleanEndpoint(config.balanceEndpoint);
-            const url = `${baseUrl}${endpoint}`;
+            const baseUrl = config.baseUrl.trim().replace(/\/+$/, '');
+            const url = `${baseUrl}/${config.balanceEndpoint.trim().replace(/^\/+/, '')}`;
 
             const headers = this.buildHeaders(config);
 
-            console.log('[UniversalAPIHandler] Fetching balance:', {
-                providerName,
-                url,
-                headers: { ...headers, [config.authHeaderName]: '***' }
-            });
-
             const response = await fetch(url, {
-                method: config.balanceMethod || 'GET',
+                method: config.balanceMethod,
                 headers
             });
 
-            const text = await response.text();
-            let data = {};
-            try {
-                data = JSON.parse(text);
-            } catch (e) {
-                console.error('[UniversalAPIHandler] Failed to parse balance response as JSON:', text);
-                return {
-                    success: false,
-                    message: `API returned status ${response.status}. Expected JSON, got: ${text.slice(0, 200)}`
-                };
-            }
-
-            if (response.status !== 200) {
-                return {
-                    success: false,
-                    message: data.message || data.error || `API returned status ${response.status}`
-                };
-            }
+            const data = await response.json();
             
             return {
-                success: true,
+                success: response.status === 200,
                 balance: data.data?.balance || data.balance,
                 currency: 'GHS'
             };
