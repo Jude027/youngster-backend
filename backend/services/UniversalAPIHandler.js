@@ -142,7 +142,7 @@ class UniversalAPIHandler {
         };
         
         // Build full URL
-        const baseUrl = sanitizedConfig.baseUrl.endsWith('/') ? sanitizedConfig.baseUrl.slice(0, -1) : sanitizedConfig.baseUrl;
+        const baseUrl = this.cleanBaseUrl(sanitizedConfig.baseUrl);
         const endpoint = sanitizedConfig.orderEndpoint.startsWith('/') ? sanitizedConfig.orderEndpoint : `/${sanitizedConfig.orderEndpoint}`;
         const url = `${baseUrl}${endpoint}`;
         
@@ -400,6 +400,14 @@ class UniversalAPIHandler {
     }
     
     /**
+     * Clean base URL by removing trailing commas and slashes
+     */
+    static cleanBaseUrl(url) {
+        if (typeof url !== 'string') return '';
+        return url.trim().replace(/,+$/, '').replace(/\/+$/, '');
+    }
+    
+    /**
      * Send HTTP request to external API
      */
     static async sendAPIRequest(apiRequest) {
@@ -535,7 +543,7 @@ class UniversalAPIHandler {
                 throw new Error('Provider or status endpoint not configured');
             }
 
-            const baseUrl = config.baseUrl.endsWith('/') ? config.baseUrl.slice(0, -1) : config.baseUrl;
+            const baseUrl = this.cleanBaseUrl(config.baseUrl);
             const endpoint = config.statusEndpoint
                 .replace(':reference', reference)
                 .replace(':identifier', reference);            
@@ -598,7 +606,7 @@ class UniversalAPIHandler {
                 };
             }
 
-            const baseUrl = config.baseUrl.endsWith('/') ? config.baseUrl.slice(0, -1) : config.baseUrl;
+            const baseUrl = this.cleanBaseUrl(config.baseUrl);
             const endpoint = config.balanceEndpoint.startsWith('/') ? config.balanceEndpoint : `/${config.balanceEndpoint}`;
             const url = `${baseUrl}${endpoint}`;
 
