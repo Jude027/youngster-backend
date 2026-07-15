@@ -131,18 +131,18 @@ function firstDefined(...values) {
 function normalizeProviderOrderStatus(status = '') {
     const rawStatus = String(status).toLowerCase().trim();
     const statusMap = {
-        delivered:  'Completed',
-        resolved:   'Completed',
-        success:    'Completed',
+        delivered: 'Completed',
+        resolved: 'Completed',
+        success: 'Completed',
         successful: 'Completed',
-        completed:  'Completed',
-        complete:   'Completed',
-        cancelled:  'Failed',
-        canceled:   'Failed',
-        rejected:   'Failed',
-        failed:     'Failed',
-        refunded:   'Cancelled/Refunded',
-        pending:    'Processing',
+        completed: 'Completed',
+        complete: 'Completed',
+        cancelled: 'Failed',
+        canceled: 'Failed',
+        rejected: 'Failed',
+        failed: 'Failed',
+        refunded: 'Cancelled/Refunded',
+        pending: 'Processing',
         processing: 'Processing'
     };
 
@@ -499,7 +499,7 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
     console.log('[PaidOrder] createPaidOrderRecords called', {
         txId,
         orderId: paymentTransaction.orderId?.toString() || null,
-        status:  paymentTransaction.status,
+        status: paymentTransaction.status,
     });
 
     // ── Duplicate guard ───────────────────────────────────────────────────────
@@ -521,17 +521,17 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
                     || paymentTransaction.phoneNumber;
                 try {
                     await Transaction.create({
-                        userId:            fallbackUserId,
-                        storeSlug:         fallbackStoreSlug,
+                        userId: fallbackUserId,
+                        storeSlug: fallbackStoreSlug,
                         beneficiary_phone: paymentTransaction.phoneNumber,
-                        description:       `${paymentTransaction.provider} Bundle Purchase - ${fallbackBeneficiary}`,
-                        balance_before:    0,
-                        amount:            paymentTransaction.totalAmount || paymentTransaction.amount,
-                        method:            'Mobile Money',
-                        status:            'Completed',
-                        orderId:           existingOrder._id,
-                        guestSessionId:    paymentTransaction.metadata?.guestSessionId || null,
-                        created:           new Date(),
+                        description: `${paymentTransaction.provider} Bundle Purchase - ${fallbackBeneficiary}`,
+                        balance_before: 0,
+                        amount: paymentTransaction.totalAmount || paymentTransaction.amount,
+                        method: 'Mobile Money',
+                        status: 'Completed',
+                        orderId: existingOrder._id,
+                        guestSessionId: paymentTransaction.metadata?.guestSessionId || null,
+                        created: new Date(),
                     });
                     console.log('[PaidOrder] Late Transaction record created for existing order', {
                         orderId: existingOrder._id.toString()
@@ -554,14 +554,14 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
                     isUnverified: Boolean(paymentTransaction.isUnverified || paymentTransaction.metadata?.isUnverified)
                 });
                 submitOrderToProvider(existingOrder, {
-                    phoneNumber:  resolvedBeneficiaryEx,
-                    packageName:  resolvedPackageNameEx,
-                    capacity:     deriveCapacity(resolvedPackageNameEx),
-                    price:        paymentTransaction.amount,
-                    provider:     resolvedProviderEx,
-                    network:      resolvedProviderEx,
-                    reference:    existingOrder._id.toString(),
-                    orderId:      existingOrder._id,
+                    phoneNumber: resolvedBeneficiaryEx,
+                    packageName: resolvedPackageNameEx,
+                    capacity: deriveCapacity(resolvedPackageNameEx),
+                    price: paymentTransaction.amount,
+                    provider: resolvedProviderEx,
+                    network: resolvedProviderEx,
+                    reference: existingOrder._id.toString(),
+                    orderId: existingOrder._id,
                     isUnverified: Boolean(paymentTransaction.isUnverified || paymentTransaction.metadata?.isUnverified),
                 }).catch(err => console.error('[PaidOrder] Late provider submission failed:', err.message));
             }
@@ -593,7 +593,7 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
         // only creates the Order, not the Transaction).
         const existingTx = await Transaction.findOne({ orderId: existingByTxn._id });
         if (!existingTx) {
-            const fallbackUserId   = paymentTransaction.userId || existingByTxn.userId;
+            const fallbackUserId = paymentTransaction.userId || existingByTxn.userId;
             const fallbackStoreSlug = paymentTransaction.storeSlug
                 || paymentTransaction.metadata?.storeSlug
                 || existingByTxn.storeSlug || null;
@@ -601,17 +601,17 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
                 || paymentTransaction.phoneNumber;
             try {
                 await Transaction.create({
-                    userId:            fallbackUserId,
-                    storeSlug:         fallbackStoreSlug,
+                    userId: fallbackUserId,
+                    storeSlug: fallbackStoreSlug,
                     beneficiary_phone: paymentTransaction.phoneNumber,
-                    description:       `${paymentTransaction.provider} Bundle Purchase - ${fallbackBeneficiary}`,
-                    balance_before:    0,
-                    amount:            paymentTransaction.totalAmount || paymentTransaction.amount,
-                    method:            'Mobile Money',
-                    status:            'Completed',
-                    orderId:           existingByTxn._id,
-                    guestSessionId:    paymentTransaction.metadata?.guestSessionId || null,
-                    created:           new Date(),
+                    description: `${paymentTransaction.provider} Bundle Purchase - ${fallbackBeneficiary}`,
+                    balance_before: 0,
+                    amount: paymentTransaction.totalAmount || paymentTransaction.amount,
+                    method: 'Mobile Money',
+                    status: 'Completed',
+                    orderId: existingByTxn._id,
+                    guestSessionId: paymentTransaction.metadata?.guestSessionId || null,
+                    created: new Date(),
                 });
                 console.log('[PaidOrder] Transaction record created for existing order', {
                     orderId: existingByTxn._id.toString(),
@@ -627,21 +627,21 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
         if (!existingByTxn.providerReference && existingByTxn.status === 'Processing') {
             const resolvedBeneficiaryEx = paymentTransaction.metadata?.beneficiary || paymentTransaction.phoneNumber;
             const resolvedPackageNameEx = resolvePaymentPackageName(paymentTransaction);
-            const resolvedProviderEx    = paymentTransaction.metadata?.orderProvider
+            const resolvedProviderEx = paymentTransaction.metadata?.orderProvider
                 || paymentTransaction.metadata?.packageProvider
                 || paymentTransaction.provider;
             console.log('[PaidOrder] Submitting existing order to provider', {
                 orderId: existingByTxn._id.toString(), resolvedProviderEx
             });
             submitOrderToProvider(existingByTxn, {
-                phoneNumber:  resolvedBeneficiaryEx,
-                packageName:  resolvedPackageNameEx,
-                capacity:     deriveCapacity(resolvedPackageNameEx),
-                price:        paymentTransaction.amount,
-                provider:     resolvedProviderEx,
-                network:      resolvedProviderEx,
-                reference:    existingByTxn._id.toString(),
-                orderId:      existingByTxn._id,
+                phoneNumber: resolvedBeneficiaryEx,
+                packageName: resolvedPackageNameEx,
+                capacity: deriveCapacity(resolvedPackageNameEx),
+                price: paymentTransaction.amount,
+                provider: resolvedProviderEx,
+                network: resolvedProviderEx,
+                reference: existingByTxn._id.toString(),
+                orderId: existingByTxn._id,
                 isUnverified: Boolean(paymentTransaction.isUnverified || paymentTransaction.metadata?.isUnverified),
             }).catch(err => console.error('[PaidOrder] Provider submission failed:', err.message));
         }
@@ -709,14 +709,14 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
     await order.save();
 
     submitOrderToProvider(order, {
-        phoneNumber:  resolvedBeneficiary,
-        packageName:  resolvedPackageName,
-        capacity:     deriveCapacity(resolvedPackageName),
-        price:        paymentTransaction.amount,
-        provider:     resolvedProvider,
-        network:      resolvedProvider,
-        reference:    order._id.toString(),
-        orderId:      order._id,
+        phoneNumber: resolvedBeneficiary,
+        packageName: resolvedPackageName,
+        capacity: deriveCapacity(resolvedPackageName),
+        price: paymentTransaction.amount,
+        provider: resolvedProvider,
+        network: resolvedProvider,
+        reference: order._id.toString(),
+        orderId: order._id,
         isUnverified: Boolean(paymentTransaction.isUnverified || paymentTransaction.metadata?.isUnverified),
     }).catch(err => console.error('Provider submission failed:', err.message));
 
@@ -1150,14 +1150,14 @@ app.post('/api/orders', async (req, res) => {
         await order.save();
 
         const providerPayload = {
-            phoneNumber:  resolvedPhoneNumber,
-            packageName:  resolvedPackageName,
-            capacity:     resolvedCapacity,
-            price:        resolvedPrice,
-            provider:     resolvedProviderName,
-            network:      resolvedProviderName,
-            reference:    order._id.toString(),
-            orderId:      order._id,
+            phoneNumber: resolvedPhoneNumber,
+            packageName: resolvedPackageName,
+            capacity: resolvedCapacity,
+            price: resolvedPrice,
+            provider: resolvedProviderName,
+            network: resolvedProviderName,
+            reference: order._id.toString(),
+            orderId: order._id,
             isUnverified: Boolean(req.body.isUnverified),
         };
 
@@ -2087,7 +2087,7 @@ app.get('/api/whatsapp/qr', (req, res) => {
 
     // Build the public URL so the page can display it for easy copy
     const proto = req.headers['x-forwarded-proto'] || req.protocol || 'https';
-    const host  = req.headers['x-forwarded-host'] || req.headers.host || '';
+    const host = req.headers['x-forwarded-host'] || req.headers.host || '';
     const publicUrl = `${proto}://${host}/api/whatsapp/qr`;
 
     const imgHtml = dataUrl
@@ -2145,10 +2145,10 @@ app.get('/api/admin/provider-api-config/:providerName', auth, admin, async (req,
         const provider = await Provider.findOne({ name: req.params.providerName });
         if (!provider) return res.status(404).json({ message: 'Provider not found' });
         res.json({
-            providerName:  provider.name,
-            apiConfig:     provider.apiConfig     || {},
-            apiConfigs:    provider.apiConfigs     || [],   // multi-config array
-            orderRouting:  provider.orderRouting   || {},
+            providerName: provider.name,
+            apiConfig: provider.apiConfig || {},
+            apiConfigs: provider.apiConfigs || [],   // multi-config array
+            orderRouting: provider.orderRouting || {},
             packageMapping: provider.packageMapping || []
         });
     } catch (err) {
@@ -2750,28 +2750,74 @@ app.post('/api/payment/verify-beneficiary', async (req, res) => {
 
         console.log('[VerifyBeneficiary] Using XpresPortal endpoint:', baseUrl, '| key preview:', `${String(apiKey).slice(0, 4)}...${String(apiKey).slice(-2)}`);
 
-        // Resolve packageId or offerId using package mappings
-        let packageId = undefined;
-        const targetPackageName = packageName || reqPackage;
-        if (provider?.packageMapping && provider.packageMapping.length > 0) {
+
+        const authHeaderName = activeApiConfig?.authHeaderName || 'x-api-key';
+        const originHeader = process.env.BACKEND_ORIGIN || 'https://youngster-backend-production.up.railway.app';
+
+        // ── Resolve the offerId ──────────────────────────────────────────────
+        // XpresPortal's validate-recipient requires an offerId (MongoDB ObjectId)
+        // or packageId — NOT a plain string like "5GB".
+        //
+        // Priority:
+        //   1. Env var XPRES_MTN_OFFER_ID (set this in .env for reliability)
+        //   2. packageMapping entry with apiBundleId that looks like a Mongo ObjectId
+        //   3. Live fetch from XpresPortal /restrictions for an MTN offer with prevalidationAvailable
+        //   4. Hard-coded known offerId for MTN Master Beneficiary Portal (last-resort fallback)
+
+        const MONGO_OID_RE = /^[0-9a-f]{24}$/i;
+
+        let offerId = process.env.XPRES_MTN_OFFER_ID;
+
+        if (!offerId && provider?.packageMapping?.length > 0) {
+            const targetPackageName = packageName || reqPackage;
             let pkgMap = null;
             if (targetPackageName) {
                 pkgMap = UniversalAPIHandler.findPackageMap(provider.packageMapping, targetPackageName);
             }
             if (!pkgMap) {
-                pkgMap = provider.packageMapping.find(m => m.apiBundleId || m.apiCapacity);
+                pkgMap = provider.packageMapping.find(m =>
+                    m.apiBundleId && MONGO_OID_RE.test(String(m.apiBundleId))
+                );
             }
-            if (pkgMap) {
-                packageId = pkgMap.apiBundleId || pkgMap.apiCapacity;
+            if (pkgMap?.apiBundleId && MONGO_OID_RE.test(String(pkgMap.apiBundleId))) {
+                offerId = pkgMap.apiBundleId;
             }
         }
 
-        if (!packageId) {
-            packageId = targetPackageName || '5GB'; // Fallback if no mapping configured
+        if (!offerId) {
+            // Fetch restrictions from XpresPortal to find the right MTN offer
+            try {
+                const restrictRes = await fetch(`${baseUrl}/restrictions`, {
+                    headers: {
+                        [authHeaderName]: apiKey,
+                        'Origin': originHeader,
+                        'Referer': originHeader
+                    }
+                });
+                if (restrictRes.ok) {
+                    const restrictData = await restrictRes.json();
+                    const mtnOffer = (restrictData.offers || []).find(o =>
+                        o.prevalidationAvailable === true &&
+                        (o.offerName || '').toLowerCase().includes('mtn')
+                    );
+                    if (mtnOffer?.offerId) {
+                        offerId = mtnOffer.offerId;
+                        console.log('[VerifyBeneficiary] Resolved offerId from live restrictions:', offerId, '(' + mtnOffer.offerName + ')');
+                    }
+                }
+            } catch (restrictErr) {
+                console.warn('[VerifyBeneficiary] Could not fetch restrictions for offerId resolution:', restrictErr.message);
+            }
         }
 
-        const authHeaderName = activeApiConfig?.authHeaderName || 'x-api-key';
-        const originHeader = process.env.BACKEND_ORIGIN || 'https://youngster-backend-production.up.railway.app';
+        // Absolute last resort — the known MTN Master Beneficiary Portal offerId.
+        // Set XPRES_MTN_OFFER_ID in .env to avoid this hardcode in production.
+        if (!offerId) {
+            offerId = '69123758ac713ed76459e629';
+            console.warn('[VerifyBeneficiary] Using hardcoded fallback offerId. Set XPRES_MTN_OFFER_ID in .env.');
+        }
+
+        console.log('[VerifyBeneficiary] Using offerId:', offerId);
 
         const response = await fetch(`${baseUrl}/order/validate-recipient`, {
             method: 'POST',
@@ -2784,7 +2830,7 @@ app.post('/api/payment/verify-beneficiary', async (req, res) => {
             body: JSON.stringify({
                 phone,
                 network: 'MTN',
-                packageId
+                offerId
             })
         });
 
@@ -2794,13 +2840,13 @@ app.post('/api/payment/verify-beneficiary', async (req, res) => {
         // We handle !response.ok, eligible = false, and success = false as a failure.
         if (!response.ok || result?.eligible === false || result?.success === false) {
             console.log('[VerifyBeneficiary] Verification failed:', result?.message || result?.error || 'Ineligible');
-            return res.status(response.status || 400).json({
+            return res.status(response.ok ? 422 : (response.status || 400)).json({
                 success: false,
-                message: result?.message || result?.error || 'Number is not eligible'
+                message: result?.message || result?.error || 'Number is not eligible for this offer'
             });
         }
 
-        console.log('[VerifyBeneficiary] Phone number verified successfully:', phone);
+        console.log('[VerifyBeneficiary] Phone number verified successfully:', phone, '| eligible:', result?.eligible, '| fromCache:', result?.fromCache);
         return res.json({ success: true, ...result });
     } catch (err) {
         console.error('[VerifyBeneficiary] Verification request failed:', err.message);
@@ -2843,7 +2889,7 @@ app.post('/api/payment/resend-otp', async (req, res) => {
             gateway,
             {
                 phoneNumber: transaction.phoneNumber,
-                provider:    transaction.provider,
+                provider: transaction.provider,
                 description: transaction.description,
             },
             transactionId,
