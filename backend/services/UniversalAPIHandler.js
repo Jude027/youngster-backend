@@ -143,7 +143,7 @@ class UniversalAPIHandler {
         
         // Build full URL
         const baseUrl = this.cleanBaseUrl(sanitizedConfig.baseUrl);
-        const endpoint = sanitizedConfig.orderEndpoint.startsWith('/') ? sanitizedConfig.orderEndpoint : `/${sanitizedConfig.orderEndpoint}`;
+        const endpoint = this.cleanEndpoint(sanitizedConfig.orderEndpoint);
         const url = `${baseUrl}${endpoint}`;
         
         // Map order data to API payload
@@ -408,6 +408,20 @@ class UniversalAPIHandler {
     }
     
     /**
+     * Clean endpoint by trimming, removing duplicate slashes, and ensuring a leading slash
+     */
+    static cleanEndpoint(endpoint) {
+        if (typeof endpoint !== 'string') return '';
+        let cleaned = endpoint.trim();
+        if (!cleaned) return '';
+        cleaned = cleaned.replace(/^\/+/, '/');
+        if (!cleaned.startsWith('/')) {
+            cleaned = '/' + cleaned;
+        }
+        return cleaned;
+    }
+    
+    /**
      * Send HTTP request to external API
      */
     static async sendAPIRequest(apiRequest) {
@@ -547,7 +561,7 @@ class UniversalAPIHandler {
             const endpoint = config.statusEndpoint
                 .replace(':reference', reference)
                 .replace(':identifier', reference);            
-            const endpointWithSlash = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+            const endpointWithSlash = this.cleanEndpoint(endpoint);
             const url = `${baseUrl}${endpointWithSlash}`;
 
             const headers = this.buildHeaders(config);
@@ -607,7 +621,7 @@ class UniversalAPIHandler {
             }
 
             const baseUrl = this.cleanBaseUrl(config.baseUrl);
-            const endpoint = config.balanceEndpoint.startsWith('/') ? config.balanceEndpoint : `/${config.balanceEndpoint}`;
+            const endpoint = this.cleanEndpoint(config.balanceEndpoint);
             const url = `${baseUrl}${endpoint}`;
 
             const headers = this.buildHeaders(config);
