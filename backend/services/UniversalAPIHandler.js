@@ -359,12 +359,14 @@ class UniversalAPIHandler {
             'Content-Type': 'application/json',
             'Accept': 'application/json'
         };
-        const authMethod = String(config.authMethod || '').toLowerCase();
+        const authMethod = String(config.authMethod || config.type || '').toLowerCase();
 
-        // Support both header auth and api-key auth
+        // Support header auth, api-key auth, bearer-token auth, and fallback
         if (
             (authMethod === 'header' ||
-            authMethod === 'api-key') &&
+            authMethod === 'api-key' ||
+            authMethod === 'bearer-token' ||
+            !authMethod) &&
             config.authHeaderName &&
             config.authHeaderValue
         ) {
@@ -422,12 +424,17 @@ class UniversalAPIHandler {
         
         try {
             const response = await fetch(apiRequest.url, options);
-            const data = await response.json().catch(() => ({}));
+            const text = await response.text();
+            let data = {};
+            try {
+                data = JSON.parse(text);
+            } catch (_) {}
             
             return {
                 status: response.status,
                 headers: response.headers,
-                body: data
+                body: data,
+                text: text
             };
         } catch (error) {
             console.error('[UniversalAPIHandler] sendAPIRequest failed:', error.message);
@@ -532,14 +539,15 @@ class UniversalAPIHandler {
             const endpoint = config.statusEndpoint
                 .replace(':reference', reference)
                 .replace(':identifier', reference);            
-            const url = `${baseUrl}${endpoint}`;
+            const endpointWithSlash = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+            const url = `${baseUrl}${endpointWithSlash}`;
 
             const headers = this.buildHeaders(config);
             
             console.log('STATUS REQUEST', {
                 url,
                 reference,
-                headers
+                headers: { ...headers, [config.authHeaderName]: '***' }
             });
 
             const response = await fetch(url, {
@@ -547,7 +555,16 @@ class UniversalAPIHandler {
                 headers
             });
 
-            const data = await response.json();
+            const text = await response.text();
+            let data = {};
+            try {
+                data = JSON.parse(text);
+            } catch (e) {
+                return {
+                    success: false,
+                    message: `API returned status ${response.status}: ${text.slice(0, 200)}`
+                };
+            }
             
             return this.parseAPIResponse(provider, { status: response.status, body: data }, config);
         } catch (error) {
@@ -582,19 +599,43 @@ class UniversalAPIHandler {
             }
 
             const baseUrl = config.baseUrl.endsWith('/') ? config.baseUrl.slice(0, -1) : config.baseUrl;
-            const url = `${baseUrl}${config.balanceEndpoint}`;
+            const endpoint = config.balanceEndpoint.startsWith('/') ? config.balanceEndpoint : `/${config.balanceEndpoint}`;
+            const url = `${baseUrl}${endpoint}`;
 
             const headers = this.buildHeaders(config);
 
+            console.log('[UniversalAPIHandler] Fetching balance:', {
+                providerName,
+                url,
+                headers: { ...headers, [config.authHeaderName]: '***' }
+            });
+
             const response = await fetch(url, {
-                method: config.balanceMethod,
+                method: config.balanceMethod || 'GET',
                 headers
             });
 
-            const data = await response.json();
+            const text = await response.text();
+            let data = {};
+            try {
+                data = JSON.parse(text);
+            } catch (e) {
+                console.error('[UniversalAPIHandler] Failed to parse balance response as JSON:', text);
+                return {
+                    success: false,
+                    message: `API returned status ${response.status}. Expected JSON, got: ${text.slice(0, 200)}`
+                };
+            }
+
+            if (response.status !== 200) {
+                return {
+                    success: false,
+                    message: data.message || data.error || `API returned status ${response.status}`
+                };
+            }
             
             return {
-                success: response.status === 200,
+                success: true,
                 balance: data.data?.balance || data.balance,
                 currency: 'GHS'
             };
