@@ -2688,11 +2688,11 @@ app.post('/api/payment/initiate', async (req, res) => {
         res.status(500).json({ message: err.message });
     }
 });
-// Verify a beneficiary (recipient) phone number with DataHub before allowing purchase
-// Keeps the DataHub API key server-side — never exposed to the browser.
+// Verify a beneficiary (recipient) phone number with XpresPortal before allowing purchase
+// Keeps the XpresPortal API key server-side — never exposed to the browser.
 app.post('/api/payment/verify-beneficiary', async (req, res) => {
     try {
-        const { phone, is_ported_number, isPortedNumber } = req.body;
+        const { phone, is_ported_number, isPortedNumber, packageName, package: reqPackage } = req.body;
         const resolvedIsPorted = (is_ported_number !== undefined) ? is_ported_number
             : (isPortedNumber !== undefined ? isPortedNumber : true);
 
@@ -2700,48 +2700,97 @@ app.post('/api/payment/verify-beneficiary', async (req, res) => {
             return res.status(400).json({ success: false, message: 'phone is required' });
         }
 
+        // Find the provider that corresponds to XpresPortal or falls back to MTN/DataHub
         const provider = await Provider.findOne({
-            name: { $in: ['DataHub', 'MTN', 'datahub'] }
+            $or: [
+                { name: { $in: ['XpresPortal', 'xpresportal', 'Xpress', 'xpress'] } },
+                { 'apiConfig.baseUrl': /xpresportal/i },
+                { 'apiConfigs.baseUrl': /xpresportal/i },
+                { name: { $in: ['MTN', 'mtn', 'DataHub', 'datahub'] } }
+            ]
         });
 
+        let activeApiConfig = null;
+        if (provider) {
+            const configs = Array.isArray(provider.apiConfigs) ? provider.apiConfigs : [];
+            // Try to find an enabled config that looks like XpresPortal
+            activeApiConfig = configs.find(c => c && c.enabled && String(c.baseUrl).includes('xpresportal'));
+            if (!activeApiConfig) {
+                // Otherwise find the first enabled standard config
+                activeApiConfig = configs.find(c => c && c.enabled && !c.forUnverifiedNumbers);
+            }
+            if (!activeApiConfig && provider.apiConfig?.enabled) {
+                activeApiConfig = provider.apiConfig;
+            }
+        }
+
         // The key lives in the Provider API Config screen's "Auth Header Value" field,
-        // stored on provider.apiConfig.authHeaderValue. Check a few likely field names
-        // for resilience, then fall back to an env var.
-        const apiKey = provider?.apiConfig?.authHeaderValue
-            || provider?.apiConfig?.apiKey
-            || provider?.apiConfig?.token
+        // stored on provider.apiConfig.authHeaderValue.
+        const apiKey = activeApiConfig?.authHeaderValue
+            || provider?.apiConfig?.authHeaderValue
             || provider?.apiKey
+            || process.env.XPRES_API_KEY
+            || process.env.XPRES_PORTAL_API_KEY
             || process.env.DATAHUB_API_KEY;
 
         if (!apiKey) {
-            console.error('[VerifyBeneficiary] No DataHub API key found on Provider.apiConfig.authHeaderValue or DATAHUB_API_KEY');
+            console.error('[VerifyBeneficiary] No API key found on Provider.apiConfig.authHeaderValue or XPRES_API_KEY env vars');
             return res.status(500).json({ success: false, message: 'Verification service is not configured' });
         }
 
-        console.log('[VerifyBeneficiary] Using key from:', provider?.apiConfig?.authHeaderValue ? `Provider(${provider.name}).apiConfig.authHeaderValue` : 'DATAHUB_API_KEY env var',
-            '| key preview:', `${String(apiKey).slice(0, 4)}...${String(apiKey).slice(-2)}`);
+        const baseUrl = activeApiConfig?.baseUrl
+            ? String(activeApiConfig.baseUrl).replace(/\/+$/, '')
+            : 'https://www.xpresportal.app/api/v1';
 
-        const authHeaderName = provider?.apiConfig?.authHeaderName || 'X-API-Key';
+        console.log('[VerifyBeneficiary] Using XpresPortal endpoint:', baseUrl, '| key preview:', `${String(apiKey).slice(0, 4)}...${String(apiKey).slice(-2)}`);
 
-        const dataHubResponse = await fetch('https://user.datahubgh.com/api/external/purchases/verify-number', {
+        // Resolve packageId or offerId using package mappings
+        let packageId = undefined;
+        const targetPackageName = packageName || reqPackage;
+        if (provider?.packageMapping && provider.packageMapping.length > 0) {
+            let pkgMap = null;
+            if (targetPackageName) {
+                pkgMap = UniversalAPIHandler.findPackageMap(provider.packageMapping, targetPackageName);
+            }
+            if (!pkgMap) {
+                pkgMap = provider.packageMapping.find(m => m.apiBundleId || m.apiCapacity);
+            }
+            if (pkgMap) {
+                packageId = pkgMap.apiBundleId || pkgMap.apiCapacity;
+            }
+        }
+
+        if (!packageId) {
+            packageId = targetPackageName || '5GB'; // Fallback if no mapping configured
+        }
+
+        const authHeaderName = activeApiConfig?.authHeaderName || 'x-api-key';
+        const originHeader = process.env.BACKEND_ORIGIN || 'https://youngster-backend-production.up.railway.app';
+
+        const response = await fetch(`${baseUrl}/order/validate-recipient`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                [authHeaderName]: apiKey
+                [authHeaderName]: apiKey,
+                'Origin': originHeader,
+                'Referer': originHeader
             },
             body: JSON.stringify({
                 phone,
-                is_ported_number: resolvedIsPorted
+                network: 'MTN',
+                packageId
             })
         });
 
-        const result = await dataHubResponse.json();
+        const result = await response.json();
 
-        if (!dataHubResponse.ok) {
-            console.log('[VerifyBeneficiary] Verification failed:', result?.message || result?.error);
-            return res.status(dataHubResponse.status).json({
+        // 422 is returned when recipient is not eligible under restricted routing for the offer.
+        // We handle !response.ok, eligible = false, and success = false as a failure.
+        if (!response.ok || result?.eligible === false || result?.success === false) {
+            console.log('[VerifyBeneficiary] Verification failed:', result?.message || result?.error || 'Ineligible');
+            return res.status(response.status || 400).json({
                 success: false,
-                message: result?.message || result?.error || 'Number could not be verified'
+                message: result?.message || result?.error || 'Number is not eligible'
             });
         }
 
