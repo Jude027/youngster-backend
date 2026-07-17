@@ -148,6 +148,26 @@ class UniversalAPIHandler {
         
         // Map order data to API payload
         const mappedPayload = this.mapPayload(orderData, config.requestPayloadMapping, provider.packageMapping, sanitizedConfig);
+
+        // ── Field-name case normalisation ──────────────────────────────────
+        // Admin panel entries are typed by hand and may use wrong casing.
+        // DataHub requires camelCase field names — correct silently here so
+        // the admin doesn't need to reconfigure.
+        const FIELD_ALIASES = {
+            'networkkey':    'networkKey',   // "networkkey" → "networkKey"
+            'network_key':   'networkKey',
+            'Networkkey':    'networkKey',
+            'NetworkKey':    'networkKey',
+            'phonenumber':   'phoneNumber',
+            'phone_number':  'phoneNumber',
+            'recipient_number': 'recipient',
+        };
+        for (const [wrong, correct] of Object.entries(FIELD_ALIASES)) {
+            if (wrong in mappedPayload && !(correct in mappedPayload)) {
+                mappedPayload[correct] = mappedPayload[wrong];
+                delete mappedPayload[wrong];
+            }
+        }
         
         console.log('[UniversalAPIHandler] Building API request:', {
             provider: provider.name,
