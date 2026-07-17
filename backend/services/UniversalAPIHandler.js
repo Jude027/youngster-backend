@@ -521,22 +521,28 @@ class UniversalAPIHandler {
                 (response.status >= 200 && response.status < 300),
             message:
                 response.body.message ||
+                response.body.data?.message ||
                 responseData?.failureReason ||
                 (isSuccess ? 'Order successful' : 'Order failed'),
             data: responseData,
             reference:
                 response.body.reference ||
+                response.body.data?.reference ||          // DataHub: { success, data: { reference } }
                 response.body.order?.reference ||
                 response.body.order?.orderReference ||
                 responseData?.reference ||
                 responseData?.orderReference,
             orderId:
                 response.body.orderId ||
+                response.body.data?.orderId ||            // DataHub nested orderId
+                response.body.data?.orderNumber ||        // DataHub orderNumber alias
                 response.body.order?.id ||
                 responseData?.orderId ||
+                responseData?.orderNumber ||
                 responseData?.id,
 
             orderStatus:
+                response.body.data?.status ||             // DataHub: { data: { status } }
                 response.body.order?.status ||
                 responseData?.status,
             status: response.status
@@ -666,13 +672,3 @@ class UniversalAPIHandler {
                 currency: 'GHS'
             };
         } catch (error) {
-            console.error('Error getting balance:', error);
-            return {
-                success: false,
-                message: error.message
-            };
-        }
-    }
-}
-
-module.exports = UniversalAPIHandler;
