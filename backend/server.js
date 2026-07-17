@@ -1263,8 +1263,13 @@ app.get('/api/guest/orders', async (req, res) => {
         if (!guestSessionId || !store) {
             return res.status(400).json({ error: 'guestSessionId and store are required' });
         }
-        const orders = await Order.find({ guestSessionId, storeSlug: store })
-            .sort({ created: -1 }).limit(50).lean();
+        // Only return orders that have an actual guestSessionId match.
+        // Never return orders where guestSessionId is null — those are legacy
+        // records that would leak other customers' orders.
+        const orders = await Order.find({
+            guestSessionId: { $eq: guestSessionId, $ne: null, $exists: true },
+            storeSlug: store
+        }).sort({ created: -1 }).limit(50).lean();
         res.json(orders);
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -1277,8 +1282,11 @@ app.get('/api/guest/transactions', async (req, res) => {
         if (!guestSessionId || !store) {
             return res.status(400).json({ error: 'guestSessionId and store are required' });
         }
-        const txns = await Transaction.find({ guestSessionId, storeSlug: store })
-            .sort({ created: -1 }).limit(50).lean();
+        // Same guard — never return records where guestSessionId is null.
+        const txns = await Transaction.find({
+            guestSessionId: { $eq: guestSessionId, $ne: null, $exists: true },
+            storeSlug: store
+        }).sort({ created: -1 }).limit(50).lean();
         res.json(txns);
     } catch (err) {
         res.status(500).json({ error: err.message });
