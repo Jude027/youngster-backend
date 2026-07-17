@@ -2740,7 +2740,21 @@ app.post('/api/payment/verify-beneficiary', async (req, res) => {
             ? String(activeApiConfig.baseUrl).replace(/\/+$/, '')
             : 'https://datahub.com.gh';
 
-        const verifyEndpoint = `${baseUrl}/api/external/purchases/verify-number`;
+        // Auto-construct the verify URL so no extra admin field is needed.
+        // DataHub verify path: /api/external/purchases/verify-number
+        // If the admin already stored the base URL as e.g. "https://datahub.com.gh/api/external"
+        // (typical because that's the prefix for /data-purchase), we just append the tail.
+        // If they stored the bare root "https://datahub.com.gh" we append the full path.
+        const DATAHUB_VERIFY_SUFFIX = '/purchases/verify-number';
+        const DATAHUB_EXTERNAL_PREFIX = '/api/external';
+        let verifyEndpoint;
+        if (baseUrl.includes('/api/external')) {
+            // baseUrl already has /api/external — just tack on the verify tail
+            verifyEndpoint = baseUrl.replace(/\/+$/, '') + DATAHUB_VERIFY_SUFFIX;
+        } else {
+            // baseUrl is root domain — append the full path
+            verifyEndpoint = baseUrl.replace(/\/+$/, '') + DATAHUB_EXTERNAL_PREFIX + DATAHUB_VERIFY_SUFFIX;
+        }
 
         console.log('[VerifyBeneficiary] Using DataHub endpoint:', verifyEndpoint,
             '| key preview:', `${String(apiKey).slice(0, 4)}...${String(apiKey).slice(-2)}`);
