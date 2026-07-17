@@ -151,10 +151,15 @@ class UniversalAPIHandler {
         
         console.log('[UniversalAPIHandler] Building API request:', {
             provider: provider.name,
+            url,
+            method: config.orderMethod,
             packageName: orderData.packageName,
             capacity: orderData.capacity,
             mappedPayload: JSON.stringify(mappedPayload),
-            packageMapping: provider.packageMapping
+            authHeader: sanitizedConfig.authHeaderName,
+            authKeyPreview: sanitizedConfig.authHeaderValue
+                ? `${String(sanitizedConfig.authHeaderValue).slice(0, 4)}...${String(sanitizedConfig.authHeaderValue).slice(-2)}`
+                : '(none)',
         });
         
         // Build headers using sanitized config
@@ -456,6 +461,12 @@ class UniversalAPIHandler {
                 data = JSON.parse(text);
             } catch (_) {}
             
+            console.log('[UniversalAPIHandler] Raw API response:', {
+                url: apiRequest.url,
+                status: response.status,
+                body: text.slice(0, 500)   // log first 500 chars to avoid flooding
+            });
+
             return {
                 status: response.status,
                 headers: response.headers,
