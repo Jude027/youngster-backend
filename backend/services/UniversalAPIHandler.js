@@ -683,3 +683,13 @@ class UniversalAPIHandler {
                 currency: 'GHS'
             };
         } catch (error) {
+            console.error('Error getting balance:', error);
+            return {
+                success: false,
+                message: error.message
+            };
+        }
+    }
+}
+
+module.exports = UniversalAPIHandler;
