@@ -2688,11 +2688,11 @@ app.post('/api/payment/initiate', async (req, res) => {
         res.status(500).json({ message: err.message });
     }
 });
-// Verify a beneficiary (recipient) phone number with XpresPortal before allowing purchase
-// Keeps the XpresPortal API key server-side — never exposed to the browser.
+// Verify a beneficiary (recipient) phone number with DataHub before allowing purchase.
+// Keeps the DataHub API key server-side — never exposed to the browser.
 app.post('/api/payment/verify-beneficiary', async (req, res) => {
     try {
-        const { phone, is_ported_number, isPortedNumber, packageName, package: reqPackage } = req.body;
+        const { phone, is_ported_number, isPortedNumber } = req.body;
         const resolvedIsPorted = (is_ported_number !== undefined) ? is_ported_number
             : (isPortedNumber !== undefined ? isPortedNumber : true);
 
@@ -2700,23 +2700,22 @@ app.post('/api/payment/verify-beneficiary', async (req, res) => {
             return res.status(400).json({ success: false, message: 'phone is required' });
         }
 
-        // Find the provider that corresponds to XpresPortal or falls back to MTN/DataHub
+        // Find the DataHub provider configuration to get the base URL and API key.
         const provider = await Provider.findOne({
             $or: [
-                { name: { $in: ['XpresPortal', 'xpresportal', 'Xpress', 'xpress'] } },
-                { 'apiConfig.baseUrl': /xpresportal/i },
-                { 'apiConfigs.baseUrl': /xpresportal/i },
-                { name: { $in: ['MTN', 'mtn', 'DataHub', 'datahub'] } }
+                { name: { $in: ['DataHub', 'datahub', 'MTN', 'mtn'] } },
+                { 'apiConfig.baseUrl': /datahub/i },
+                { 'apiConfigs.baseUrl': /datahub/i }
             ]
         });
 
         let activeApiConfig = null;
         if (provider) {
             const configs = Array.isArray(provider.apiConfigs) ? provider.apiConfigs : [];
-            // Try to find an enabled config that looks like XpresPortal
-            activeApiConfig = configs.find(c => c && c.enabled && String(c.baseUrl).includes('xpresportal'));
+            // Prefer a DataHub config
+            activeApiConfig = configs.find(c => c && c.enabled && String(c.baseUrl || '').toLowerCase().includes('datahub'));
             if (!activeApiConfig) {
-                // Otherwise find the first enabled standard config
+                // Fall back to the first enabled standard config
                 activeApiConfig = configs.find(c => c && c.enabled && !c.forUnverifiedNumbers);
             }
             if (!activeApiConfig && provider.apiConfig?.enabled) {
@@ -2724,121 +2723,43 @@ app.post('/api/payment/verify-beneficiary', async (req, res) => {
             }
         }
 
-        // The key lives in the Provider API Config screen's "Auth Header Value" field,
-        // stored on provider.apiConfig.authHeaderValue.
+        // API key: prefer provider config, then env vars
         const apiKey = activeApiConfig?.authHeaderValue
             || provider?.apiConfig?.authHeaderValue
             || provider?.apiKey
-            || process.env.XPRES_API_KEY
-            || process.env.XPRES_PORTAL_API_KEY
-            || process.env.DATAHUB_API_KEY;
+            || process.env.DATAHUB_API_KEY
+            || process.env.XPRES_API_KEY;
 
         if (!apiKey) {
-            console.error('[VerifyBeneficiary] No API key found on Provider.apiConfig.authHeaderValue or XPRES_API_KEY env vars');
+            console.error('[VerifyBeneficiary] No DataHub API key found. Set DATAHUB_API_KEY env var or configure the Provider\'s Auth Header Value.');
             return res.status(500).json({ success: false, message: 'Verification service is not configured' });
         }
 
-        let baseUrl = activeApiConfig?.baseUrl
+        // Base URL: use provider config or fall back to DataHub's root
+        const baseUrl = activeApiConfig?.baseUrl
             ? String(activeApiConfig.baseUrl).replace(/\/+$/, '')
-            : 'https://www.xpresportal.app/api/v1';
+            : 'https://datahub.com.gh';
 
-        // XpresPortal API base path must include '/api/v1'.
-        // If baseUrl is set to the root domain 'https://www.xpresportal.app', append '/api/v1'.
-        if (baseUrl.includes('xpresportal') && !baseUrl.includes('/api/v1')) {
-            baseUrl += '/api/v1';
-        }
+        const verifyEndpoint = `${baseUrl}/api/external/purchases/verify-number`;
 
-        console.log('[VerifyBeneficiary] Using XpresPortal endpoint:', baseUrl, '| key preview:', `${String(apiKey).slice(0, 4)}...${String(apiKey).slice(-2)}`);
+        console.log('[VerifyBeneficiary] Using DataHub endpoint:', verifyEndpoint,
+            '| key preview:', `${String(apiKey).slice(0, 4)}...${String(apiKey).slice(-2)}`);
 
-
-        const authHeaderName = activeApiConfig?.authHeaderName || 'x-api-key';
-        const originHeader = process.env.BACKEND_ORIGIN || 'https://youngster-backend-production.up.railway.app';
-
-        // ── Resolve the offerId ──────────────────────────────────────────────
-        // XpresPortal's validate-recipient requires an offerId (MongoDB ObjectId)
-        // or packageId — NOT a plain string like "5GB".
-        //
-        // Priority:
-        //   1. Env var XPRES_MTN_OFFER_ID (set this in .env for reliability)
-        //   2. packageMapping entry with apiBundleId that looks like a Mongo ObjectId
-        //   3. Live fetch from XpresPortal /restrictions for an MTN offer with prevalidationAvailable
-        //   4. Hard-coded known offerId for MTN Master Beneficiary Portal (last-resort fallback)
-
-        const MONGO_OID_RE = /^[0-9a-f]{24}$/i;
-
-        let offerId = process.env.XPRES_MTN_OFFER_ID;
-
-        if (!offerId && provider?.packageMapping?.length > 0) {
-            const targetPackageName = packageName || reqPackage;
-            let pkgMap = null;
-            if (targetPackageName) {
-                pkgMap = UniversalAPIHandler.findPackageMap(provider.packageMapping, targetPackageName);
-            }
-            if (!pkgMap) {
-                pkgMap = provider.packageMapping.find(m =>
-                    m.apiBundleId && MONGO_OID_RE.test(String(m.apiBundleId))
-                );
-            }
-            if (pkgMap?.apiBundleId && MONGO_OID_RE.test(String(pkgMap.apiBundleId))) {
-                offerId = pkgMap.apiBundleId;
-            }
-        }
-
-        if (!offerId) {
-            // Fetch restrictions from XpresPortal to find the right MTN offer
-            try {
-                const restrictRes = await fetch(`${baseUrl}/restrictions`, {
-                    headers: {
-                        [authHeaderName]: apiKey,
-                        'Origin': originHeader,
-                        'Referer': originHeader
-                    }
-                });
-                if (restrictRes.ok) {
-                    const restrictData = await restrictRes.json();
-                    const mtnOffer = (restrictData.offers || []).find(o =>
-                        o.prevalidationAvailable === true &&
-                        (o.offerName || '').toLowerCase().includes('mtn')
-                    );
-                    if (mtnOffer?.offerId) {
-                        offerId = mtnOffer.offerId;
-                        console.log('[VerifyBeneficiary] Resolved offerId from live restrictions:', offerId, '(' + mtnOffer.offerName + ')');
-                    }
-                }
-            } catch (restrictErr) {
-                console.warn('[VerifyBeneficiary] Could not fetch restrictions for offerId resolution:', restrictErr.message);
-            }
-        }
-
-        // Absolute last resort — the known MTN Master Beneficiary Portal offerId.
-        // Set XPRES_MTN_OFFER_ID in .env to avoid this hardcode in production.
-        if (!offerId) {
-            offerId = '69123758ac713ed76459e629';
-            console.warn('[VerifyBeneficiary] Using hardcoded fallback offerId. Set XPRES_MTN_OFFER_ID in .env.');
-        }
-
-        console.log('[VerifyBeneficiary] Using offerId:', offerId);
-
-        const response = await fetch(`${baseUrl}/order/validate-recipient`, {
+        const response = await fetch(verifyEndpoint, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                [authHeaderName]: apiKey,
-                'Origin': originHeader,
-                'Referer': originHeader
+                'X-API-Key': apiKey
             },
             body: JSON.stringify({
                 phone,
-                network: 'MTN',
-                offerId
+                is_ported_number: resolvedIsPorted
             })
         });
 
         const result = await response.json();
 
-        // 422 is returned when recipient is not eligible under restricted routing for the offer.
-        // We handle !response.ok, eligible = false, and success = false as a failure.
-        if (!response.ok || result?.eligible === false || result?.success === false) {
+        if (!response.ok || result?.success === false) {
             console.log('[VerifyBeneficiary] Verification failed:', result?.message || result?.error || 'Ineligible');
             return res.status(response.ok ? 422 : (response.status || 400)).json({
                 success: false,
@@ -2846,7 +2767,7 @@ app.post('/api/payment/verify-beneficiary', async (req, res) => {
             });
         }
 
-        console.log('[VerifyBeneficiary] Phone number verified successfully:', phone, '| eligible:', result?.eligible, '| fromCache:', result?.fromCache);
+        console.log('[VerifyBeneficiary] Phone number verified successfully:', phone);
         return res.json({ success: true, ...result });
     } catch (err) {
         console.error('[VerifyBeneficiary] Verification request failed:', err.message);
