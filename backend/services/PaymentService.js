@@ -78,8 +78,11 @@ class PaymentService {
             // Save pending transaction record
             const transaction = new PaymentTransaction({
                 userId:         paymentData.userId,
+                storeSlug:      paymentData.storeSlug || paymentData.metadata?.storeSlug || '',
+                clientType:     paymentData.clientType || paymentData.metadata?.clientType || '',
                 paymentGateway: gatewayName,
-                provider:       paymentData.provider,
+                provider:       paymentData.orderProvider || paymentData.provider,
+                paymentNetwork: paymentData.paymentNetwork || paymentData.provider,
                 phoneNumber:    paymentData.phoneNumber,
                 amount:         paymentData.amount,
                 transactionFee: transactionFee,
@@ -89,24 +92,42 @@ class PaymentService {
                 description:    paymentData.description || `Payment for ${paymentData.provider}`,
                 packageName:    paymentData.packageName || '',
                 bundle:         paymentData.bundle_size || paymentData.bundle || '',
-                // Persist so createPaidOrderRecords can route to the right API config
-                // when the webhook fires (potentially minutes after initiation).
-                isUnverified:   Boolean(paymentData.isUnverified),
                 metadata:       {
                     ...(paymentData.metadata || {}),
-                    packageName:     paymentData.packageName || '',
-                    bundle_size:     paymentData.bundle_size || '',
-                    storeSlug:       paymentData.storeSlug   || '',
-                    clientType:      paymentData.clientType  || '',
-                    guestSessionId:  paymentData.guestSessionId || paymentData.metadata?.guestSessionId || null,
-                    packageProvider: paymentData.packageProvider || paymentData.provider || '',
-                    isUnverified:    Boolean(paymentData.isUnverified),
+                    packageName: paymentData.packageName || '',
+                    bundle_size: paymentData.bundle_size || '',
+                    storeSlug:   paymentData.storeSlug   || '',
+                    clientType:  paymentData.clientType  || '',
+                    guestSessionId: paymentData.guestSessionId || paymentData.metadata?.guestSessionId || null,
+                    beneficiary: paymentData.beneficiary || paymentData.recipientPhoneNumber || '',
+                    paymentNetwork: paymentData.paymentNetwork || paymentData.provider || '',
+                    orderProvider: paymentData.orderProvider || paymentData.provider || '',
                 }
             });
             await transaction.save();
             console.log('✅ PaymentTransaction saved:', { transactionId, status: 'processing' });
 
+            if (gateway.type === 'hosted-checkout' || gateway.posLink) {
+                const redirectUrl = this.buildHostedCheckoutUrl(gateway, paymentData, transactionId, totalAmount);
+                transaction.redirectUrl = redirectUrl;
+                await transaction.save();
+
+                console.log('🔗 Hosted checkout payment created:', { transactionId, redirectUrl });
+                console.log('='.repeat(80) + '\n');
+
+                return {
+                    success: true,
+                    transactionId,
+                    redirectUrl,
+                    hostedCheckout: true,
+                    message: 'Redirecting to secure payment page',
+                    transaction
+                };
+            }
+
             // ── Moolre USSD Direct Debit ───────────────────────────────────────────
+            // Call Moolre collections API — sends a USSD prompt to the customer's phone.
+            // If Moolre responds with TP14, an OTP was sent to the customer first.
             const result = await this.processMoolreCollection(gateway, paymentData, transactionId, totalAmount);
 
             if (!result.success) {
@@ -131,7 +152,7 @@ class PaymentService {
                 };
             }
 
-            // USSD prompt sent — poll for status (no webhook needed)
+            // USSD prompt sent — webhook will update status when customer approves/rejects
             if (result.gatewayTransactionId) {
                 transaction.gatewayTransactionId = result.gatewayTransactionId;
                 await transaction.save();
@@ -159,6 +180,36 @@ class PaymentService {
         }
     }
 
+    static buildHostedCheckoutUrl(gateway, paymentData, transactionId, amount) {
+        const configuredUrl = gateway.posLink || gateway.redirectUrl;
+        if (!configuredUrl) {
+            throw new Error('Hosted checkout is enabled but no POS/redirect payment link is configured');
+        }
+
+        try {
+            const url = new URL(configuredUrl);
+            const params = {
+                externalref: transactionId,
+                reference: transactionId,
+                amount: parseFloat(amount.toFixed(2)),
+                phone: paymentData.phoneNumber,
+                payer: paymentData.phoneNumber,
+                description: paymentData.description || `${paymentData.provider} Bundle`,
+                callback_url: gateway.callbackUrl || '',
+                redirect_url: gateway.redirectUrl || ''
+            };
+
+            for (const [key, value] of Object.entries(params)) {
+                if (value !== undefined && value !== null && value !== '') {
+                    url.searchParams.set(key, String(value));
+                }
+            }
+            return url.toString();
+        } catch (_) {
+            return configuredUrl;
+        }
+    }
+
     /**
      * Process payment through Moolre Collections API
      *
@@ -170,6 +221,8 @@ class PaymentService {
      * Channel codes: 13=MTN, 6=Telecel, 7=AT
      */
     static async processMoolreCollection(gateway, paymentData, transactionId, amount) {
+        // Map provider name → Moolre numeric channel code (from Moolre docs)
+        // 13=MTN, 6=Telecel, 7=AT
         const CHANNEL_MAP = {
             'MTN':         '13',
             'MTN EXPRESS': '13',
@@ -179,7 +232,7 @@ class PaymentService {
             'AT BIGTIME':  '7',
             'AIRTELTIGO':  '7',
         };
-        const providerKey = (paymentData.provider || '').toUpperCase().trim();
+        const providerKey = (paymentData.paymentNetwork || paymentData.provider || '').toUpperCase().trim();
         const channelCode = CHANNEL_MAP[providerKey] || '13';
 
         const baseUrl = (gateway.apiBaseUrl || 'https://api.moolre.com').replace(/\/+$/, '');
@@ -229,20 +282,24 @@ class PaymentService {
 
         debugLog('📡 Moolre collection response', { status: response.status, data });
 
-        // TP14 = OTP required — Moolre sent SMS to customer, frontend must collect it
+        // ── TP14: OTP verification required ──────────────────────────────────────
+        // Moolre sent an OTP SMS to the customer. The frontend must collect it
+        // and re-submit via POST /api/payment/verify-otp.
         if (data.code === 'TP14') {
             console.log('🔐 Moolre requires OTP verification — SMS sent to customer');
             return {
-                success:      true,
-                requiresOtp:  true,
+                success:     true,
+                requiresOtp: true,
                 transactionId,
-                message:      data.message || 'OTP sent to your phone. Please enter it to continue.',
+                message:     data.message || 'OTP sent to customer. Please enter it to continue.',
             };
         }
 
+        // Moolre returns status:"0" for errors, status:"1" for success.
         const statusStr = String(data.status ?? '');
         const isSuccess = statusStr === '1';
 
+        // Moolre's own transaction ID comes back in data.data.transactionid
         const gatewayRef = data.data?.transactionid
             || data.data?.id
             || transactionId;
@@ -262,15 +319,12 @@ class PaymentService {
 
     /**
      * Submit OTP for Moolre payment verification (called after TP14 response).
-     *
-     * Moolre's 3-step flow:
-     *   1. POST /open/transact/payment (no otpcode)  → TP14 (OTP SMS sent)
-     *   2. POST /open/transact/payment (with otpcode) → TP17 (phone verified)
-     *   3. POST /open/transact/payment (no otpcode, same externalref) → USSD push sent
-     *
-     * This function handles steps 2 and 3.
+     * Re-calls the same collections endpoint with the otpcode added.
+     * On success Moolre sends the USSD payment prompt to the customer's phone.
      */
     static async verifyOtp(transactionId, otpCode) {
+        console.log('🔐 verifyOtp called', { transactionId, otpCodeLength: otpCode?.length });
+
         const transaction = await PaymentTransaction.findOne({ transactionId });
         if (!transaction) throw new Error('Transaction not found');
 
@@ -282,117 +336,100 @@ class PaymentService {
             'TELECEL': '6',
             'AT': '7', 'AT ISHARE': '7', 'AT BIGTIME': '7', 'AIRTELTIGO': '7',
         };
-        const providerKey   = (transaction.provider || '').toUpperCase().trim();
+        const providerKey   = (transaction.paymentNetwork || transaction.metadata?.paymentNetwork || transaction.provider || '').toUpperCase().trim();
         const channelCode   = CHANNEL_MAP[providerKey] || '13';
         const accountnumber = gateway.accountNumber || gateway.apiKey || '';
         const baseUrl       = (gateway.apiBaseUrl || 'https://api.moolre.com').replace(/\/+$/, '');
-        const url           = `${baseUrl}/open/transact/payment`;
-        const headers       = this.getMoolreHeaders(gateway);
 
-        const baseBody = {
+        // Safely resolve amount — totalAmount may be null/undefined on older transactions
+        const resolvedAmount = parseFloat(
+            (Number(transaction.totalAmount ?? transaction.amount ?? 0)).toFixed(2)
+        );
+
+        console.log('🔐 verifyOtp amounts', {
+            totalAmount: transaction.totalAmount,
+            amount: transaction.amount,
+            resolvedAmount
+        });
+
+        const body = {
             type:          1,
             channel:       channelCode,
             currency:      'GHS',
             payer:         transaction.phoneNumber,
-            amount:        parseFloat(transaction.totalAmount.toFixed(2)),
+            amount:        resolvedAmount,
             externalref:   transactionId,
+            otpcode:       String(otpCode).trim(),
             reference:     transaction.description || `${transaction.provider} Bundle`,
             accountnumber: accountnumber,
         };
 
-        // ── Step 2: submit OTP (phone verification) ───────────────────────────
-        console.log('🔐 Submitting OTP to Moolre (step 2 — phone verify)', { transactionId });
+        console.log('🔐 Submitting OTP to Moolre', { transactionId, url: `${baseUrl}/open/transact/payment` });
 
-        const otpResponse = await fetch(url, {
+        const response = await fetch(`${baseUrl}/open/transact/payment`, {
             method:  'POST',
-            headers,
-            body:    JSON.stringify({ ...baseBody, otpcode: String(otpCode).trim() }),
+            headers: this.getMoolreHeaders(gateway),
+            body:    JSON.stringify(body),
         });
 
-        const otpRaw = await otpResponse.text();
-        console.log('Moolre OTP response:', otpRaw.substring(0, 500));
+        const rawText = await response.text();
+        console.log('Moolre OTP response:', rawText.substring(0, 500));
 
-        let otpData;
-        try { otpData = JSON.parse(otpRaw); } catch {
-            throw new Error(`Moolre returned non-JSON: ${otpRaw.substring(0, 200)}`);
+        let data;
+        try { data = JSON.parse(rawText); } catch {
+            throw new Error(`Moolre returned non-JSON: ${rawText.substring(0, 200)}`);
         }
 
-        if (otpData.code === 'TP14') {
+        // TP14 again = wrong OTP
+        if (data.code === 'TP14') {
             throw new Error('Incorrect OTP. Please check the SMS and try again.');
         }
 
-        // TP13 = "External Reference is required and must be unique" — this means
-        // the transaction was already successfully processed (step 3 already ran).
-        // This happens when the customer retries verify-otp after a network error
-        // even though the server already completed it. Treat as success.
-        if (otpData.code === 'TP13' || otpData.message?.toLowerCase().includes('unique')) {
-            console.log('ℹ️ OTP retry on already-processed transaction — treating as success', { transactionId });
-            await PaymentTransaction.updateOne(
-                { transactionId },
-                { $set: { otpVerifiedAt: new Date() } }
-            );
-            return {
-                success: true,
-                message: 'Payment prompt already sent to your phone. Enter your MoMo PIN to approve.',
-                transactionId,
-            };
+        const isSuccess = String(data.status ?? '') === '1';
+        if (!isSuccess) {
+            throw new Error(data.message || data.code || 'OTP verification failed');
         }
 
-        if (String(otpData.status ?? '') !== '1') {
-            throw new Error(otpData.message || otpData.code || 'OTP verification failed');
+        let finalData = data;
+
+        // Moolre returns TP17 when the OTP successfully registers the phone number.
+        // However, this does NOT trigger the USSD prompt. We must immediately resend
+        // the original payment request (without the otpcode) to actually trigger it.
+        if (data.code === 'TP17') {
+            console.log('🔄 Moolre returned TP17 (OTP Verified). Re-triggering collection...');
+            
+            delete body.otpcode; // Remove OTP code for the actual collection request
+            
+            const reResponse = await fetch(`${baseUrl}/open/transact/payment`, {
+                method:  'POST',
+                headers: this.getMoolreHeaders(gateway),
+                body:    JSON.stringify(body),
+            });
+            
+            const reText = await reResponse.text();
+            console.log('Moolre re-trigger response:', reText.substring(0, 500));
+            
+            try { 
+                finalData = JSON.parse(reText); 
+            } catch {
+                throw new Error(`Moolre returned non-JSON on re-trigger: ${reText.substring(0, 200)}`);
+            }
+            
+            if (String(finalData.status ?? '') !== '1') {
+                throw new Error(finalData.message || finalData.code || 'Payment initiation failed after OTP verification');
+            }
         }
 
-        // ── Step 3: re-submit WITHOUT otpcode — this triggers the USSD push ──
-        console.log('💳 Submitting payment request to Moolre (step 3 — USSD push)', { transactionId });
+        // OTP accepted and payment re-triggered — USSD prompt is now being sent to the customer
+        const gatewayRef = finalData.data?.transactionid || finalData.data?.id || finalData.transactionid || '';
+        transaction.status = 'otp_verified';
+        if (gatewayRef) transaction.gatewayTransactionId = gatewayRef;
+        await transaction.save();
 
-        const payResponse = await fetch(url, {
-            method:  'POST',
-            headers,
-            body:    JSON.stringify(baseBody),   // no otpcode
-        });
-
-        const payRaw = await payResponse.text();
-        console.log('Moolre payment request response:', payRaw.substring(0, 500));
-
-        let payData;
-        try { payData = JSON.parse(payRaw); } catch {
-            throw new Error(`Moolre returned non-JSON on payment request: ${payRaw.substring(0, 200)}`);
-        }
-
-        debugLog('📡 Moolre step-3 payment response', { status: payResponse.status, data: payData });
-
-        // TP14 here means the externalref was reused and Moolre wants a fresh OTP —
-        // this should not happen but guard it just in case.
-        if (payData.code === 'TP14') {
-            throw new Error('Payment request failed: Moolre requires a new OTP. Please start over.');
-        }
-
-        // TP13 on step 3 = USSD push was already sent for this externalref.
-        // Treat as success — customer just needs to approve on their phone.
-        if (payData.code === 'TP13' || payData.message?.toLowerCase().includes('unique')) {
-            console.log('ℹ️ Step-3 retry on already-sent USSD push — treating as success', { transactionId });
-        } else if (String(payData.status ?? '') !== '1') {
-            throw new Error(payData.message || payData.code || 'Payment request failed after OTP verification');
-        }
-
-        // Capture Moolre's own transaction ID if present in step-3 response
-        const gatewayRef = payData.data?.transactionid || payData.data?.id
-            || otpData.data?.transactionid || otpData.data?.id || '';
-
-        // Stamp otpVerifiedAt via updateOne so it persists even if the schema
-        // doesn't declare the field (bypasses Mongoose strict mode).
-        const updateFields = { otpVerifiedAt: new Date() };
-        if (gatewayRef) updateFields.gatewayTransactionId = gatewayRef;
-
-        await PaymentTransaction.updateOne(
-            { transactionId },
-            { $set: updateFields }
-        );
-
-        console.log('✅ OTP verified + USSD push sent to customer phone');
+        console.log('✅ OTP verified — USSD prompt sent to customer phone. Full Moolre response:', JSON.stringify(finalData));
         return {
             success: true,
-            message: payData.message || 'Payment prompt sent to your phone. Enter your MoMo PIN to approve.',
+            message: finalData.message || 'OTP verified. Payment prompt sent to your phone.',
             transactionId,
         };
     }
@@ -420,7 +457,7 @@ class PaymentService {
     static async handlePaymentCallback(callbackData) {
         try {
             // Moolre sends txstatus (int) and externalref (our TRX-xxx reference)
-            const { txstatus, externalref, transactionid, amount, payer, message } = callbackData;
+            const { txstatus, externalref, reference, transactionid, amount, payer, message } = callbackData;
 
             console.log('🔔 [PaymentService] handlePaymentCallback called', {
                 externalref,
@@ -430,11 +467,25 @@ class PaymentService {
                 timestamp: new Date().toISOString()
             });
 
-            // Look up our transaction by the externalref we sent in the request
-            const transaction = await PaymentTransaction.findOne({ transactionId: externalref });
+            // Look up our transaction by the externalref we sent in the request,
+            // but also fall back to txstatus transaction_id variations if needed.
+            const transaction = await PaymentTransaction.findOne({
+                $or: [
+                    { transactionId: externalref },
+                    { transactionId: reference },
+                    { transactionId: transactionid },
+                    { transactionId: externalref && String(externalref).trim() },
+                    { transactionId: reference && String(reference).trim() },
+                    { transactionId: transactionid && String(transactionid).trim() }
+                ].filter(Boolean)
+            });
             if (!transaction) {
-                console.error('❌ [PaymentService] Transaction not found for externalref:', externalref);
-                throw new Error(`Transaction not found: ${externalref}`);
+                console.error('❌ [PaymentService] Transaction not found for callback:', {
+                    externalref,
+                    transactionid,
+                    txstatus
+                });
+                throw new Error(`Transaction not found for callback: ${externalref || transactionid}`);
             }
 
             console.log('✅ [PaymentService] Found transaction:', {
@@ -444,14 +495,17 @@ class PaymentService {
             });
 
             const txStatus = Number(txstatus);
+            const statusText = String(callbackData.status || '').trim().toLowerCase();
+            const isSuccessStatus = txStatus === 1 || ['success', 'successful', 'completed', 'complete', 'paid', 'approved'].includes(statusText);
+            const isFailedStatus = txStatus === 2 || ['failed', 'failure', 'cancelled', 'canceled', 'rejected', 'declined'].includes(statusText);
 
-            if (txStatus === 1) {
+            if (isSuccessStatus) {
                 transaction.status               = 'success';
                 transaction.gatewayTransactionId = String(transactionid || '');
                 transaction.completedAt          = new Date();
                 console.log('✅ [PaymentService] Transaction marked SUCCESS');
 
-            } else if (txStatus === 2) {
+            } else if (isFailedStatus) {
                 transaction.status       = 'failed';
                 transaction.errorMessage = message || 'Payment failed or rejected by customer';
                 transaction.completedAt  = new Date();
@@ -479,10 +533,7 @@ class PaymentService {
     }
 
     /**
-     * Check payment status.
-     * Since we are not using webhooks (main site owns the callback URL),
-     * we poll Moolre's status endpoint directly every time this is called.
-     * The frontend calls this every 5 seconds after OTP verification.
+     * Check payment status (polls DB + optional Moolre status query fallback)
      */
     static async checkPaymentStatus(transactionId) {
         try {
@@ -496,74 +547,32 @@ class PaymentService {
                 initiatedAt: transaction.initiatedAt
             });
 
-            // Already finalised — return immediately
-            if (transaction.status === 'success' || transaction.status === 'failed') {
-                return { success: true, status: transaction.status, transaction };
-            }
+            // Trigger fallback status query if still pending/otp_verified after 10 seconds
+            if (transaction.status === 'pending' || transaction.status === 'processing' || transaction.status === 'otp_verified') {
+                const ageSeconds = (Date.now() - new Date(transaction.initiatedAt).getTime()) / 1000;
 
-            // Poll Moolre directly for pending/processing transactions.
-            //
-            // Use otpVerifiedAt as the reference point when it exists — that is the
-            // moment Moolre actually received the final payment request and issued the
-            // USSD push.  Moolre needs ~10 s to register the transaction before its
-            // status endpoint will return anything other than SS07 ("not found").
-            //
-            // Fall back to initiatedAt for non-OTP flows (direct USSD push), where
-            // a 5-second head start is sufficient.
-            //
-            // Read as lean to pick up otpVerifiedAt even if the schema doesn't
-            // declare it (Mongoose strict mode hides undeclared fields on hydrated docs).
-            const txLean        = await PaymentTransaction.findOne({ transactionId }).lean();
-            const referenceTime = txLean?.otpVerifiedAt || txLean?.initiatedAt || transaction.initiatedAt;
-            const delaySeconds  = txLean?.otpVerifiedAt ? 10 : 5;
-            const ageSeconds    = (Date.now() - new Date(referenceTime).getTime()) / 1000;
+                console.log('⏱️ [PaymentService] Fallback check', {
+                    transactionId,
+                    ageSeconds:        Math.round(ageSeconds),
+                    shouldCallFallback: ageSeconds >= 10,
+                    gateway:           transaction.paymentGateway
+                });
 
-            if (ageSeconds >= delaySeconds) {
-                const gateway = await PaymentGateway.findOne({ name: transaction.paymentGateway });
+                if (ageSeconds >= 10) {
+                    console.log('🔄 [PaymentService] Triggering fallback status query');
+                    const gateway = await PaymentGateway.findOne({ name: transaction.paymentGateway });
 
-                if (gateway) {
-                    console.log('🔄 [PaymentService] Polling Moolre status directly');
-                    const gatewayStatus = await this.queryMoolreStatus(gateway, transaction);
+                    if (gateway) {
+                        const gatewayStatus = await this.queryMoolreStatus(gateway, transaction);
 
-                    if (gatewayStatus && gatewayStatus.definitive) {
-                        console.log('✅ [PaymentService] Moolre returned definitive status:', gatewayStatus.status);
-                        transaction.status = gatewayStatus.status;
-
-                        if (gatewayStatus.status === 'success') {
-                            transaction.completedAt = new Date();
-
-                            // Auto-create the order when payment is confirmed
-                            try {
-                                const Order = require('./models/Order');
-                                const existingOrder = await Order.findOne({ transactionId });
-                                if (!existingOrder) {
-                                    const beneficiary = transaction.metadata?.beneficiary
-                                        || transaction.phoneNumber;
-                                    // Use packageProvider (the actual data network, e.g. "AT Ishare")
-                                    // rather than transaction.provider (the MoMo payment network,
-                                    // e.g. "MTN") — they differ when paying cross-network.
-                                    const orderProvider = transaction.metadata?.packageProvider
-                                        || transaction.provider;
-                                    await Order.create({
-                                        userId:        transaction.userId || null,
-                                        storeSlug:     transaction.storeSlug || null,
-                                        beneficiary,
-                                        phoneNumber:   beneficiary,
-                                        package:       orderProvider,
-                                        bundle_size:   transaction.metadata?.bundle_size || transaction.description,
-                                        amount:        transaction.amount,
-                                        status:        'pending',
-                                        transactionId,
-                                        created:       new Date(),
-                                    });
-                                    console.log('✅ Order auto-created for transaction', transactionId, { orderProvider });
-                                }
-                            } catch (orderErr) {
-                                console.warn('⚠️ Could not auto-create order:', orderErr.message);
-                            }
+                        if (gatewayStatus && gatewayStatus.definitive) {
+                            console.log('✅ [PaymentService] Fallback returned definitive status:', gatewayStatus.status);
+                            transaction.status = gatewayStatus.status;
+                            if (gatewayStatus.status === 'success') transaction.completedAt = new Date();
+                            await transaction.save();
                         }
-
-                        await transaction.save();
+                    } else {
+                        console.log('❌ [PaymentService] Gateway not found:', transaction.paymentGateway);
                     }
                 }
             }
