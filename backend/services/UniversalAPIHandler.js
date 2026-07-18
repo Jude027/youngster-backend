@@ -33,11 +33,11 @@ function formatGhanaPhone(phone, format = 'international') {
         case 'local':
             // 0XXXXXXXXX — required by iGet's recipientNumber field
             return intl.startsWith('233') ? '0' + intl.slice(3) : intl;
-        
+
         case 'raw':
             // Digits only (XXXXXXXXX)
             return intl.startsWith('233') ? intl.slice(3) : p;
-        
+
         case 'e164':
         case 'international':
         default:
@@ -68,7 +68,7 @@ class UniversalAPIHandler {
 
             // Build API request
             const apiRequest = this.buildAPIRequest(provider, orderData, activeApiConfig);
-            
+
             // Log the request
             const log = new ProviderAPILog({
                 providerId: provider._id,
@@ -85,23 +85,23 @@ class UniversalAPIHandler {
 
             // Send request to external API
             const response = await this.sendAPIRequest(apiRequest);
-            
+
             // Parse response
             const parsedResponse = this.parseAPIResponse(provider, response, activeApiConfig);
-            
+
             // Update log
             log.responseStatus = response.status;
             log.responseData = parsedResponse;
             log.apiReference = parsedResponse.reference || parsedResponse.orderId;
             log.status = parsedResponse.success ? 'success' : 'failed';
             log.responseTime = new Date();
-            
+
             if (!parsedResponse.success) {
                 log.errorMessage = parsedResponse.message || 'Order failed';
             }
-            
+
             await log.save();
-            
+
             return {
                 success: parsedResponse.success,
                 message: parsedResponse.message,
@@ -113,7 +113,7 @@ class UniversalAPIHandler {
             };
         } catch (error) {
             console.error('Error processing order:', error);
-            
+
             return {
                 success: false,
                 message: error.message,
@@ -127,7 +127,7 @@ class UniversalAPIHandler {
      */
     static buildAPIRequest(provider, orderData, activeApiConfig = null) {
         const config = activeApiConfig || getActiveApiConfig(provider) || provider.apiConfig;
-        
+
         // Sanitize config values to remove any problematic Unicode characters
         const sanitizedConfig = {
             ...config,
@@ -140,12 +140,12 @@ class UniversalAPIHandler {
             successField: this.sanitizeString(config.successField || ''),
             dataField: this.sanitizeString(config.dataField || '')
         };
-        
+
         // Build full URL
         const baseUrl = this.cleanBaseUrl(sanitizedConfig.baseUrl);
         const endpoint = this.cleanEndpoint(sanitizedConfig.orderEndpoint);
         const url = `${baseUrl}${endpoint}`;
-        
+
         // Map order data to API payload
         const mappedPayload = this.mapPayload(orderData, config.requestPayloadMapping, provider.packageMapping, sanitizedConfig);
 
@@ -154,12 +154,12 @@ class UniversalAPIHandler {
         // DataHub requires camelCase field names — correct silently here so
         // the admin doesn't need to reconfigure.
         const FIELD_ALIASES = {
-            'networkkey':    'networkKey',   // "networkkey" → "networkKey"
-            'network_key':   'networkKey',
-            'Networkkey':    'networkKey',
-            'NetworkKey':    'networkKey',
-            'phonenumber':   'phoneNumber',
-            'phone_number':  'phoneNumber',
+            'networkkey': 'networkKey',   // "networkkey" → "networkKey"
+            'network_key': 'networkKey',
+            'Networkkey': 'networkKey',
+            'NetworkKey': 'networkKey',
+            'phonenumber': 'phoneNumber',
+            'phone_number': 'phoneNumber',
             'recipient_number': 'recipient',
         };
         for (const [wrong, correct] of Object.entries(FIELD_ALIASES)) {
@@ -168,7 +168,7 @@ class UniversalAPIHandler {
                 delete mappedPayload[wrong];
             }
         }
-        
+
         console.log('[UniversalAPIHandler] Building API request:', {
             provider: provider.name,
             url,
@@ -181,10 +181,10 @@ class UniversalAPIHandler {
                 ? `${String(sanitizedConfig.authHeaderValue).slice(0, 4)}...${String(sanitizedConfig.authHeaderValue).slice(-2)}`
                 : '(none)',
         });
-        
+
         // Build headers using sanitized config
         const headers = this.buildHeaders(sanitizedConfig);
-        
+
         return {
             url,
             method: config.orderMethod,
@@ -242,7 +242,7 @@ class UniversalAPIHandler {
      */
     static mapPayload(orderData, mapping, packageMapping, config) {
         const payload = {};
-        
+
         // Default mappings if not provided
         const defaultMapping = {
             network: 'network',
@@ -250,9 +250,9 @@ class UniversalAPIHandler {
             capacity: 'capacity',
             reference: 'reference'
         };
-        
+
         const actualMapping = mapping && Object.keys(mapping).length > 0 ? mapping : defaultMapping;
-        
+
         // Find package mapping to get API capacity (and, optionally, a fixed
         // network/bundleType string e.g. "Telecel-5959" for iGet).
         // Uses normalised comparison so "5 GB", "5GB", "5gb" all resolve
@@ -284,7 +284,7 @@ class UniversalAPIHandler {
                 `Check that the Provider's packageMapping contains an entry whose packageName matches.`
             );
         }
-        
+
         // Build payload with mapped fields
         for (const [ourField, apiField] of Object.entries(actualMapping)) {
             if (ourField === 'capacity') {
@@ -320,7 +320,7 @@ class UniversalAPIHandler {
                 payload[apiField] = orderData[ourField];
             }
         }
-        
+
         // ── Phone number formatting ──────────────────────────────────────────
         // iGet's recipientNumber field requires local 0XXXXXXXXX format.
         // Auto-detect: if the mapped API field name is "recipientNumber", always
@@ -343,17 +343,54 @@ class UniversalAPIHandler {
         }
 
         // ── Provider-specific overrides ──────────────────────────────────────
-        // XpresPortal AT Ishare requires type + offerSlug
+        // XpresPortal AT Ishare — POST /order/at
+        // Required fields per openapi.json: type, phone (233XXXXXXXXX), volume, offerSlug, webhookUrl
         const providerKey = (orderData.provider || orderData.network || '').toLowerCase().trim();
-        if (providerKey === 'at ishare' || providerKey === 'at_ishare') {
-            payload.type = 'single';
-            payload.offerSlug = 'airteltigo_ishare_portal';
+        if (providerKey === 'at ishare' || providerKey === 'at_ishare' || providerKey === 'airteltigo') {
+            const phoneVal = payload.phone || payload.msisdn || payload.recipient || payload.phoneNumber || payload.recipientNumber || orderData.phoneNumber;
+            const volumeVal = payload.volume !== undefined ? payload.volume : (payload.capacity !== undefined ? payload.capacity : orderData.capacity);
+            const offerSlugVal = payload.offerSlug || 'airteltigo_ishare_portal';
 
-            if (process.env.XPRES_WEBHOOK_URL) {
-                payload.webhookUrl = process.env.XPRES_WEBHOOK_URL;
-            } else {
-                console.warn('XPRES_WEBHOOK_URL is not set; XpresPortal webhook callbacks may not reach this server.');
+            // Clear other fields to match the exact spec
+            for (const key in payload) {
+                delete payload[key];
             }
+
+            payload.type = 'single';
+            payload.phone = formatGhanaPhone(phoneVal, 'international');
+            payload.volume = String(volumeVal);
+            payload.offerSlug = offerSlugVal;
+            payload.webhookUrl = process.env.XPRES_WEBHOOK_URL
+                || 'https://youngster-backend-production.up.railway.app/api/webhooks/xpresportal';
+        }
+
+        // XpresPortal AT Bigtime — POST /order/at (same base, different offerSlug)
+        if (providerKey === 'at bigtime' || providerKey === 'at_bigtime') {
+            payload.type = payload.type || 'single';
+            payload.offerSlug = payload.offerSlug || 'airteltigo_bigtime';
+            payload.webhookUrl = process.env.XPRES_WEBHOOK_URL
+                || 'https://youngster-backend-production.up.railway.app/api/webhooks/xpresportal';
+            if (payload.msisdn && !payload.phone) { payload.phone = payload.msisdn; delete payload.msisdn; }
+            if (payload.recipient && !payload.phone) { payload.phone = payload.recipient; delete payload.recipient; }
+            if (payload.capacity !== undefined && payload.volume === undefined) {
+                payload.volume = String(payload.capacity); delete payload.capacity;
+            }
+            if (payload.phone) payload.phone = formatGhanaPhone(payload.phone, 'international');
+        }
+
+        // XpresPortal Telecel — POST /order/telecel
+        if (providerKey === 'telecel' || providerKey === 'telecel data') {
+            payload.type = payload.type || 'single';
+            payload.webhookUrl = payload.webhookUrl
+                || process.env.XPRES_WEBHOOK_URL
+                || 'https://youngster-backend-production.up.railway.app/api/webhooks/xpresportal';
+            if (payload.msisdn && !payload.phone) { payload.phone = payload.msisdn; delete payload.msisdn; }
+            if (payload.recipient && !payload.phone) { payload.phone = payload.recipient; delete payload.recipient; }
+            if (payload.capacity !== undefined && payload.volume === undefined) {
+                payload.volume = String(payload.capacity); delete payload.capacity;
+            }
+            if (payload.phone) payload.phone = formatGhanaPhone(payload.phone, 'international');
+            // iGet Telecel bundleType hardcode only applies to iGet — skip for XpresPortal
         }
 
         // iGet Telecel — all bundle sizes use the same bundleType "Telecel-5959".
@@ -393,9 +430,9 @@ class UniversalAPIHandler {
         // Support header auth, api-key auth, bearer-token auth, and fallback
         if (
             (authMethod === 'header' ||
-            authMethod === 'api-key' ||
-            authMethod === 'bearer-token' ||
-            !authMethod) &&
+                authMethod === 'api-key' ||
+                authMethod === 'bearer-token' ||
+                !authMethod) &&
             config.authHeaderName &&
             config.authHeaderValue
         ) {
@@ -427,7 +464,7 @@ class UniversalAPIHandler {
             .replace(/[\u200B-\u200D\uFEFF]/g, '') // zero-width characters
             .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, ''); // control characters
     }
-    
+
     /**
      * Clean base URL by removing trailing commas and slashes
      */
@@ -435,7 +472,7 @@ class UniversalAPIHandler {
         if (typeof url !== 'string') return '';
         return url.trim().replace(/,+$/, '').replace(/\/+$/, '');
     }
-    
+
     /**
      * Clean endpoint by trimming, removing duplicate slashes, and ensuring a leading slash
      */
@@ -449,7 +486,7 @@ class UniversalAPIHandler {
         }
         return cleaned;
     }
-    
+
     /**
      * Send HTTP request to external API
      */
@@ -458,7 +495,7 @@ class UniversalAPIHandler {
             method: apiRequest.method,
             headers: apiRequest.headers
         };
-        
+
         if (apiRequest.body) {
             // Sanitize body to remove special Unicode characters that might cause encoding issues
             let body = apiRequest.body;
@@ -472,15 +509,15 @@ class UniversalAPIHandler {
                 options.body = body;
             }
         }
-        
+
         try {
             const response = await fetch(apiRequest.url, options);
             const text = await response.text();
             let data = {};
             try {
                 data = JSON.parse(text);
-            } catch (_) {}
-            
+            } catch (_) { }
+
             console.log('[UniversalAPIHandler] Raw API response:', {
                 url: apiRequest.url,
                 status: response.status,
@@ -525,10 +562,10 @@ class UniversalAPIHandler {
      */
     static parseAPIResponse(provider, response, activeApiConfig = null) {
         const config = activeApiConfig || getActiveApiConfig(provider) || provider.apiConfig || {};
-        
+
         // Declare all variables before use
         const successField = config.successField || 'success';
-        const dataField    = config.dataField    || '';
+        const dataField = config.dataField || '';
 
         // Get success status (handle nested fields like "data.success")
         let isSuccess = false;
@@ -545,7 +582,7 @@ class UniversalAPIHandler {
         } else if (dataField && response.body[dataField]) {
             responseData = response.body[dataField];
         }
-        
+
         return {
             success:
                 isSuccess === true ||
@@ -601,12 +638,12 @@ class UniversalAPIHandler {
             const baseUrl = this.cleanBaseUrl(config.baseUrl);
             const endpoint = config.statusEndpoint
                 .replace(':reference', reference)
-                .replace(':identifier', reference);            
+                .replace(':identifier', reference);
             const endpointWithSlash = this.cleanEndpoint(endpoint);
             const url = `${baseUrl}${endpointWithSlash}`;
 
             const headers = this.buildHeaders(config);
-            
+
             console.log('STATUS REQUEST', {
                 url,
                 reference,
@@ -628,7 +665,7 @@ class UniversalAPIHandler {
                     message: `API returned status ${response.status}: ${text.slice(0, 200)}`
                 };
             }
-            
+
             return this.parseAPIResponse(provider, { status: response.status, body: data }, config);
         } catch (error) {
             console.error('Error checking order status:', error);
@@ -673,8 +710,11 @@ class UniversalAPIHandler {
                 headers: { ...headers, [config.authHeaderName]: '***' }
             });
 
+            const isXpresPortal = String(config.baseUrl || '').toLowerCase().includes('xpresportal');
+            const method = isXpresPortal ? 'GET' : (config.balanceMethod && config.balanceMethod.toUpperCase() === 'POST' ? 'POST' : 'GET');
+
             const response = await fetch(url, {
-                method: config.balanceMethod || 'GET',
+                method,
                 headers
             });
 
@@ -696,11 +736,19 @@ class UniversalAPIHandler {
                     message: data.message || data.error || `API returned status ${response.status}`
                 };
             }
-            
+
+            if (isXpresPortal) {
+                return {
+                    success: data.success === true,
+                    balance: data.balance !== undefined ? data.balance : null,
+                    currency: data.currency || 'GHS'
+                };
+            }
+
             return {
                 success: true,
-                balance: data.data?.balance || data.balance,
-                currency: 'GHS'
+                balance: data.balance ?? data.data?.balance ?? null,
+                currency: data.currency || 'GHS'
             };
         } catch (error) {
             console.error('Error getting balance:', error);
@@ -713,3 +761,4 @@ class UniversalAPIHandler {
 }
 
 module.exports = UniversalAPIHandler;
+
