@@ -78,11 +78,8 @@ class PaymentService {
             // Save pending transaction record
             const transaction = new PaymentTransaction({
                 userId:         paymentData.userId,
-                storeSlug:      paymentData.storeSlug || paymentData.metadata?.storeSlug || '',
-                clientType:     paymentData.clientType || paymentData.metadata?.clientType || '',
                 paymentGateway: gatewayName,
-                provider:       paymentData.orderProvider || paymentData.provider,
-                paymentNetwork: paymentData.paymentNetwork || paymentData.provider,
+                provider:       paymentData.provider,
                 phoneNumber:    paymentData.phoneNumber,
                 amount:         paymentData.amount,
                 transactionFee: transactionFee,
@@ -92,6 +89,8 @@ class PaymentService {
                 description:    paymentData.description || `Payment for ${paymentData.provider}`,
                 packageName:    paymentData.packageName || '',
                 bundle:         paymentData.bundle_size || paymentData.bundle || '',
+                // Persist so createPaidOrderRecords can route to the right API config
+                // when the webhook fires (potentially minutes after initiation).
                 isUnverified:   Boolean(paymentData.isUnverified),
                 metadata:       {
                     ...(paymentData.metadata || {}),
@@ -99,10 +98,9 @@ class PaymentService {
                     bundle_size:     paymentData.bundle_size || '',
                     storeSlug:       paymentData.storeSlug   || '',
                     clientType:      paymentData.clientType  || '',
+                    guestSessionId:  paymentData.guestSessionId || paymentData.metadata?.guestSessionId || null,
                     packageProvider: paymentData.packageProvider || paymentData.provider || '',
-                    orderProvider:   paymentData.orderProvider  || paymentData.provider || '',
                     isUnverified:    Boolean(paymentData.isUnverified),
-                    guestSessionId:  paymentData.guestSessionId || null,
                 }
             });
             await transaction.save();
@@ -344,66 +342,57 @@ class PaymentService {
             throw new Error(otpData.message || otpData.code || 'OTP verification failed');
         }
 
-        // ── Step 2 succeeded — stamp otpVerifiedAt and respond to the frontend ──
-        // Step 3 (USSD push) runs in the background so the HTTP response is not
-        // blocked by a second Moolre round-trip (which can take 10–20 s and causes
-        // Railway's proxy to close the connection before the response arrives).
-        await PaymentTransaction.updateOne(
-            { transactionId },
-            { $set: { otpVerifiedAt: new Date() } }
-        );
-        console.log('✅ OTP verified — triggering USSD push in background', { transactionId });
+        // ── Step 3: re-submit WITHOUT otpcode — this triggers the USSD push ──
+        console.log('💳 Submitting payment request to Moolre (step 3 — USSD push)', { transactionId });
 
-        // Fire step 3 without awaiting — the status poller will pick up the result
-        setImmediate(async () => {
-            try {
-                console.log('💳 Submitting payment request to Moolre (step 3 — USSD push)', { transactionId });
-
-                const payResponse = await fetch(url, {
-                    method:  'POST',
-                    headers,
-                    body:    JSON.stringify(baseBody),   // no otpcode
-                });
-
-                const payRaw = await payResponse.text();
-                console.log('Moolre payment request response:', payRaw.substring(0, 500));
-
-                let payData;
-                try { payData = JSON.parse(payRaw); } catch {
-                    console.error('Moolre step-3 non-JSON:', payRaw.substring(0, 200));
-                    return;
-                }
-
-                debugLog('📡 Moolre step-3 payment response', { status: payResponse.status, data: payData });
-
-                if (payData.code === 'TP13' || payData.message?.toLowerCase().includes('unique')) {
-                    console.log('ℹ️ Step-3 retry on already-sent USSD push — treating as success', { transactionId });
-                } else if (payData.code === 'TP14') {
-                    console.warn('⚠️ Step-3 got TP14 — Moolre wants a new OTP for this transaction', { transactionId });
-                    return;
-                } else if (String(payData.status ?? '') !== '1') {
-                    console.error('❌ Step-3 failed:', payData.message || payData.code, { transactionId });
-                    return;
-                }
-
-                const gatewayRef = payData.data?.transactionid || payData.data?.id
-                    || otpData.data?.transactionid || otpData.data?.id || '';
-
-                if (gatewayRef) {
-                    await PaymentTransaction.updateOne(
-                        { transactionId },
-                        { $set: { gatewayTransactionId: gatewayRef } }
-                    );
-                }
-                console.log('✅ USSD push sent to customer phone (step 3 complete)', { transactionId });
-            } catch (bgErr) {
-                console.error('❌ Background step-3 error:', bgErr.message, { transactionId });
-            }
+        const payResponse = await fetch(url, {
+            method:  'POST',
+            headers,
+            body:    JSON.stringify(baseBody),   // no otpcode
         });
 
+        const payRaw = await payResponse.text();
+        console.log('Moolre payment request response:', payRaw.substring(0, 500));
+
+        let payData;
+        try { payData = JSON.parse(payRaw); } catch {
+            throw new Error(`Moolre returned non-JSON on payment request: ${payRaw.substring(0, 200)}`);
+        }
+
+        debugLog('📡 Moolre step-3 payment response', { status: payResponse.status, data: payData });
+
+        // TP14 here means the externalref was reused and Moolre wants a fresh OTP —
+        // this should not happen but guard it just in case.
+        if (payData.code === 'TP14') {
+            throw new Error('Payment request failed: Moolre requires a new OTP. Please start over.');
+        }
+
+        // TP13 on step 3 = USSD push was already sent for this externalref.
+        // Treat as success — customer just needs to approve on their phone.
+        if (payData.code === 'TP13' || payData.message?.toLowerCase().includes('unique')) {
+            console.log('ℹ️ Step-3 retry on already-sent USSD push — treating as success', { transactionId });
+        } else if (String(payData.status ?? '') !== '1') {
+            throw new Error(payData.message || payData.code || 'Payment request failed after OTP verification');
+        }
+
+        // Capture Moolre's own transaction ID if present in step-3 response
+        const gatewayRef = payData.data?.transactionid || payData.data?.id
+            || otpData.data?.transactionid || otpData.data?.id || '';
+
+        // Stamp otpVerifiedAt via updateOne so it persists even if the schema
+        // doesn't declare the field (bypasses Mongoose strict mode).
+        const updateFields = { otpVerifiedAt: new Date() };
+        if (gatewayRef) updateFields.gatewayTransactionId = gatewayRef;
+
+        await PaymentTransaction.updateOne(
+            { transactionId },
+            { $set: updateFields }
+        );
+
+        console.log('✅ OTP verified + USSD push sent to customer phone');
         return {
             success: true,
-            message: 'OTP verified. A payment prompt will be sent to your phone — enter your MoMo PIN to approve.',
+            message: payData.message || 'Payment prompt sent to your phone. Enter your MoMo PIN to approve.',
             transactionId,
         };
     }
@@ -545,14 +534,29 @@ class PaymentService {
 
                             // Auto-create the order when payment is confirmed
                             try {
-                                const Order = require('../models/Order');
+                                const Order = require('./models/Order');
                                 const existingOrder = await Order.findOne({ transactionId });
                                 if (!existingOrder) {
-                                    // Order creation is handled by createPaidOrderRecords in server.js
-                                    // which also creates the Transaction record. Don't create here
-                                    // to avoid the race where createPaidOrderRecords finds the order
-                                    // already exists and skips the Transaction save.
-                                    console.log('ℹ️ Order will be created by createPaidOrderRecords', transactionId);
+                                    const beneficiary = transaction.metadata?.beneficiary
+                                        || transaction.phoneNumber;
+                                    // Use packageProvider (the actual data network, e.g. "AT Ishare")
+                                    // rather than transaction.provider (the MoMo payment network,
+                                    // e.g. "MTN") — they differ when paying cross-network.
+                                    const orderProvider = transaction.metadata?.packageProvider
+                                        || transaction.provider;
+                                    await Order.create({
+                                        userId:        transaction.userId || null,
+                                        storeSlug:     transaction.storeSlug || null,
+                                        beneficiary,
+                                        phoneNumber:   beneficiary,
+                                        package:       orderProvider,
+                                        bundle_size:   transaction.metadata?.bundle_size || transaction.description,
+                                        amount:        transaction.amount,
+                                        status:        'pending',
+                                        transactionId,
+                                        created:       new Date(),
+                                    });
+                                    console.log('✅ Order auto-created for transaction', transactionId, { orderProvider });
                                 }
                             } catch (orderErr) {
                                 console.warn('⚠️ Could not auto-create order:', orderErr.message);
