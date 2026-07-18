@@ -682,6 +682,7 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
     const storeSlug = paymentTransaction.storeSlug || paymentTransaction.metadata?.storeSlug || null;
     const clientType = paymentTransaction.clientType || paymentTransaction.metadata?.clientType || 'Customers';
     const resolvedBeneficiary = paymentTransaction.metadata?.beneficiary || paymentTransaction.phoneNumber;
+    const guestSessionId = paymentTransaction.metadata?.guestSessionId || null;
     // Use the actual package provider (e.g. "MTN", "AT Ishare") not the payment network
     const resolvedProvider = paymentTransaction.metadata?.orderProvider
         || paymentTransaction.metadata?.packageProvider
@@ -691,6 +692,7 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
         userId,
         storeSlug,
         clientType,
+        guestSessionId,
         beneficiary: resolvedBeneficiary,
         phoneNumber: resolvedBeneficiary,
         package: resolvedProvider,
@@ -2627,6 +2629,7 @@ app.post('/api/payment/initiate', async (req, res) => {
             bundle_size,
             storeSlug,
             clientType,
+            guestSessionId,
             beneficiary,
             recipientPhoneNumber
         } = req.body;
@@ -2668,6 +2671,7 @@ app.post('/api/payment/initiate', async (req, res) => {
             userId,
             storeSlug,
             clientType,
+            guestSessionId: guestSessionId || null,
             beneficiary: resolvedBeneficiary,
             isUnverified: Boolean(req.body.isUnverified),
             metadata: {
@@ -2676,6 +2680,7 @@ app.post('/api/payment/initiate', async (req, res) => {
                 bundle_size: resolvedPackageName,
                 storeSlug,
                 clientType,
+                guestSessionId: guestSessionId || null,
                 paymentNetwork: resolvedPaymentNetwork,
                 orderProvider: resolvedOrderProvider,
                 beneficiary: resolvedBeneficiary,
