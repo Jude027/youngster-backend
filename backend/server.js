@@ -1335,9 +1335,32 @@ app.get('/api/storefront-prices', async (req, res) => {
         if (clientType) query.clientType = clientType;
 
         const prices = await ReferralPrice.find(query).lean();
+        const filtered = prices.filter(p => p.price > 0);
 
-        // Only return rows where a price was actually set
-        res.json(prices.filter(p => p.price > 0));
+        // Attach displayConfig from BasePrice so generic-package.html can apply
+        // provider customisations (header colour, page title, section, etc.)
+        if (filtered.length) {
+            const providerNames = [...new Set(filtered.map(p => p.provider).filter(Boolean))];
+            const basePriceRows = await BasePrice.find(
+                { provider: { $in: providerNames } },
+                { provider: 1, displayConfig: 1 }
+            ).lean();
+            // Build a map: provider → displayConfig (first row wins per provider)
+            const dcMap = {};
+            basePriceRows.forEach(row => {
+                if (row.provider && row.displayConfig && !dcMap[row.provider]) {
+                    dcMap[row.provider] = row.displayConfig;
+                }
+            });
+            // Merge onto each price row
+            filtered.forEach(p => {
+                if (p.provider && dcMap[p.provider]) {
+                    p.displayConfig = dcMap[p.provider];
+                }
+            });
+        }
+
+        res.json(filtered);
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
