@@ -1501,6 +1501,22 @@ app.post('/api/admin/base-prices/bulk', auth, admin, async (req, res) => {
     }
 });
 
+app.post('/api/admin/base-prices/display-config', auth, admin, async (req, res) => {
+    try {
+        const { provider, displayConfig } = req.body;
+        if (!provider) {
+            return res.status(400).json({ message: 'Provider name is required' });
+        }
+        await BasePrice.updateMany(
+            { provider },
+            { $set: { displayConfig } }
+        );
+        res.json({ message: 'Display configuration saved successfully' });
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+});
+
 // ==================== DASHBOARD STATIC FILES ====================
 // Frontend is served by a separate Railway service — only redirect here.
 const DASHBOARD_DIR = process.env.DASHBOARD_DIR || path.join(__dirname, '../Dashboard');
