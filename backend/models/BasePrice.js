@@ -5,19 +5,20 @@ const mongoose = require('mongoose');
 // Stored once per provider (duplicated across packageName/clientType rows is
 // harmless since the frontend just reads the first match for a given provider).
 const displayConfigSchema = new mongoose.Schema({
-    headerColor:         { type: String, default: '' },  // e.g. '#6a11cb'
-    headerGradient:       { type: String, default: '' },  // optional full CSS gradient override
-    pageTitle:            { type: String, default: '' },  // e.g. "Buy MyProvider Bundle"
-    pageSubtitle:          { type: String, default: '' },
-    noteText:             { type: String, default: '' },  // note box message; empty hides the note box
-    showPortedCheckbox:    { type: Boolean, default: true },
-    showPrefixes:          { type: Boolean, default: true },
-    validPrefixes:         { type: String, default: '' },  // e.g. "024, 054, 055"
-    bundleLabel:           { type: String, default: 'Package' },   // "Select Bundle" -> "Select {bundleLabel}"
-    purchaseLabel:         { type: String, default: 'Purchase Package' },
-    deliveryText:          { type: String, default: 'Fast delivery' },
-    validity:              { type: String, default: '' },
-    logoUrl:               { type: String, default: '' }
+    headerColor: { type: String, default: '' },  // e.g. '#6a11cb'
+    headerGradient: { type: String, default: '' },  // optional full CSS gradient override
+    pageTitle: { type: String, default: '' },  // e.g. "Buy MyProvider Bundle"
+    pageSubtitle: { type: String, default: '' },
+    noteText: { type: String, default: '' },  // note box message; empty hides the note box
+    showPortedCheckbox: { type: Boolean, default: true },
+    showPrefixes: { type: Boolean, default: true },
+    validPrefixes: { type: String, default: '' },  // e.g. "024, 054, 055"
+    bundleLabel: { type: String, default: 'Package' },   // "Select Bundle" -> "Select {bundleLabel}"
+    purchaseLabel: { type: String, default: 'Purchase Package' },
+    deliveryText: { type: String, default: 'Fast delivery' },
+    validity: { type: String, default: '' },
+    logoUrl: { type: String, default: '' },
+    storefrontSection: { type: String, default: 'data_bundle' } // 'data_bundle' or 'special_offers'
 }, { _id: false });
 
 const basePriceSchema = new mongoose.Schema({
