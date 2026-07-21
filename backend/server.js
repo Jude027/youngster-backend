@@ -1337,6 +1337,30 @@ app.get('/api/storefront-prices', async (req, res) => {
         const prices = await ReferralPrice.find(query).lean();
         const filtered = prices.filter(p => p.price > 0);
 
+        // If no referral prices set for a provider, fall back to BasePrice
+        // so newly-added providers show up on the storefront immediately.
+        const referralProviders = new Set(filtered.map(p => p.provider));
+        const basePriceQuery = clientType
+            ? { clientType }
+            : {};
+        const allBasePrices = await BasePrice.find(basePriceQuery).lean();
+        const basePriceProvidersNotInReferral = [
+            ...new Set(allBasePrices.map(p => p.provider).filter(p => p && !referralProviders.has(p)))
+        ];
+        if (basePriceProvidersNotInReferral.length) {
+            const fallbackPrices = allBasePrices
+                .filter(p => basePriceProvidersNotInReferral.includes(p.provider) && p.price > 0)
+                .map(bp => ({
+                    provider:    bp.provider,
+                    packageName: bp.packageName,
+                    clientType:  bp.clientType,
+                    price:       bp.price,
+                    userId:      storeSettings.userId,
+                    _isFallback: true,
+                }));
+            filtered.push(...fallbackPrices);
+        }
+
         // Attach displayConfig from BasePrice so generic-package.html can apply
         // provider customisations (header colour, page title, section, etc.)
         if (filtered.length) {
@@ -1345,14 +1369,12 @@ app.get('/api/storefront-prices', async (req, res) => {
                 { provider: { $in: providerNames } },
                 { provider: 1, displayConfig: 1 }
             ).lean();
-            // Build a map: provider → displayConfig (first row wins per provider)
             const dcMap = {};
             basePriceRows.forEach(row => {
                 if (row.provider && row.displayConfig && !dcMap[row.provider]) {
                     dcMap[row.provider] = row.displayConfig;
                 }
             });
-            // Merge onto each price row
             filtered.forEach(p => {
                 if (p.provider && dcMap[p.provider]) {
                     p.displayConfig = dcMap[p.provider];
