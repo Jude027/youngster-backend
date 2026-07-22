@@ -2226,6 +2226,39 @@ app.delete('/api/admin/role-price-mapping/:role', auth, admin, async (req, res) 
     }
 });
 
+// ==================== PUBLIC STOREFRONT PROVIDERS ====================
+// No auth required — returns providers + their storefrontSection for guest dashboards.
+// GET /api/storefront-providers?store=<slug>
+app.get('/api/storefront-providers', async (req, res) => {
+    try {
+        const providers = await Provider.find().sort({ order: 1 }).lean();
+
+        // Attach storefrontSection from BasePrice displayConfig for each provider
+        const basePriceRows = await BasePrice.find(
+            {},
+            { provider: 1, 'displayConfig.storefrontSection': 1, 'displayConfig.logoUrl': 1 }
+        ).lean();
+
+        const sectionMap = {};
+        basePriceRows.forEach(row => {
+            if (row.provider && row.displayConfig?.storefrontSection && !sectionMap[row.provider]) {
+                sectionMap[row.provider] = row.displayConfig.storefrontSection;
+            }
+        });
+
+        const result = providers.map(p => ({
+            name:             p.name,
+            logoUrl:          p.logoUrl || '',
+            order:            p.order,
+            storefrontSection: sectionMap[p.name] || 'data_bundle',
+        }));
+
+        res.json(result);
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+});
+
 // ==================== PROVIDERS ====================
 app.get('/api/providers', auth, async (req, res) => {
     try {
