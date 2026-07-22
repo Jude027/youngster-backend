@@ -1317,6 +1317,54 @@ app.post('/api/referral-prices/bulk', auth, async (req, res) => {
     }
 });
 
+// ==================== DEBUG: STOREFRONT PRICES TEST ====================
+// GET /api/debug/storefront-prices?store=<slug>&clientType=<type>&provider=<name>
+// Returns exactly what storefront-prices.js would receive, plus diagnosis info.
+// Remove or protect this endpoint after debugging is done.
+app.get('/api/debug/storefront-prices', async (req, res) => {
+    try {
+        const { store, clientType, provider } = req.query;
+        const storeSettings = await findStoreSettingsByStoreSlug(store);
+        if (!storeSettings) return res.json({ error: 'Store not found', store });
+
+        const query = { userId: storeSettings.userId };
+        if (clientType) query.clientType = clientType;
+        const referralPrices = await ReferralPrice.find(query).lean();
+        const filtered = referralPrices.filter(p => p.price > 0);
+
+        const basePriceQuery = clientType ? { clientType } : {};
+        const allBasePrices = await BasePrice.find(basePriceQuery).lean();
+
+        const matchingReferral = provider
+            ? filtered.filter(p => (p.provider || '').toLowerCase().trim() === (provider || '').toLowerCase().trim())
+            : filtered;
+
+        const matchingBase = provider
+            ? allBasePrices.filter(p => (p.provider || '').toLowerCase().trim() === (provider || '').toLowerCase().trim())
+            : allBasePrices;
+
+        res.json({
+            diagnosis: {
+                store,
+                clientType: clientType || '(not provided)',
+                provider: provider || '(not provided)',
+                storeFound: true,
+                userId: storeSettings.userId,
+                totalReferralPrices: filtered.length,
+                referralPricesForProvider: matchingReferral.length,
+                totalBasePrices: allBasePrices.length,
+                basePricesForProvider: matchingBase.length,
+                allProviderNamesInReferral: [...new Set(filtered.map(p => p.provider))],
+                allProviderNamesInBase: [...new Set(allBasePrices.map(p => p.provider))],
+            },
+            referralPricesForProvider: matchingReferral,
+            basePricesForProvider: matchingBase.map(p => ({ provider: p.provider, packageName: p.packageName, price: p.price, hasDisplayConfig: !!p.displayConfig })),
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // ==================== PUBLIC STOREFRONT PRICES ====================
 // Called by storefront-prices.js on bundle pages (mtn.html, telecel.html, etc.)
 // No auth required — customers are not logged in.
