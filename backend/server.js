@@ -1311,6 +1311,19 @@ app.post('/api/referral-prices/bulk', auth, async (req, res) => {
         await ReferralPrice.deleteMany({ userId: req.user.id });
         const newPrices = prices.map(p => ({ ...p, userId: req.user.id }));
         const inserted = await ReferralPrice.insertMany(newPrices);
+
+        // Sync provider names into the Provider collection so dashboard cards
+        // use the exact same name as stored in ReferralPrice — prevents mismatch
+        // where the card passes "Results_checker" but DB has "Results_checkers".
+        const providerNames = [...new Set(newPrices.map(p => p.provider).filter(Boolean))];
+        for (const name of providerNames) {
+            await Provider.findOneAndUpdate(
+                { name },
+                { $setOnInsert: { name } },
+                { upsert: true }
+            );
+        }
+
         res.json(inserted);
     } catch (err) {
         res.status(500).json({ message: err.message });
@@ -1343,6 +1356,12 @@ app.get('/api/debug/storefront-prices', async (req, res) => {
             ? allBasePrices.filter(p => (p.provider || '').toLowerCase().trim() === (provider || '').toLowerCase().trim())
             : allBasePrices;
 
+        // Also show what a fuzzy match would return (for debugging name mismatches)
+        const providerNorm = (provider || '').toLowerCase().trim().replace(/s$/, ''); // strip trailing s
+        const fuzzyReferral = provider
+            ? filtered.filter(p => (p.provider || '').toLowerCase().trim().replace(/s$/, '').includes(providerNorm) || providerNorm.includes((p.provider || '').toLowerCase().trim().replace(/s$/, '')))
+            : [];
+
         res.json({
             diagnosis: {
                 store,
@@ -1352,12 +1371,14 @@ app.get('/api/debug/storefront-prices', async (req, res) => {
                 userId: storeSettings.userId,
                 totalReferralPrices: filtered.length,
                 referralPricesForProvider: matchingReferral.length,
+                fuzzyMatchCount: fuzzyReferral.length,
                 totalBasePrices: allBasePrices.length,
                 basePricesForProvider: matchingBase.length,
                 allProviderNamesInReferral: [...new Set(filtered.map(p => p.provider))],
                 allProviderNamesInBase: [...new Set(allBasePrices.map(p => p.provider))],
             },
             referralPricesForProvider: matchingReferral,
+            fuzzyMatches: fuzzyReferral.map(p => ({ provider: p.provider, packageName: p.packageName, price: p.price })),
             basePricesForProvider: matchingBase.map(p => ({ provider: p.provider, packageName: p.packageName, price: p.price, hasDisplayConfig: !!p.displayConfig })),
         });
     } catch (err) {
@@ -1378,9 +1399,12 @@ app.get('/api/storefront-prices', async (req, res) => {
         const storeSettings = await findStoreSettingsByStoreSlug(store);
         if (!storeSettings) return res.status(404).json({ message: 'Store not found' });
 
-        // Build query — clientType is optional; if absent return all prices for the store
+        // Build query — clientType is optional; if absent return all prices for the store.
+        // Use case-insensitive regex so "Sub-agents" matches "sub-agents" etc.
         const query = { userId: storeSettings.userId };
-        if (clientType) query.clientType = clientType;
+        if (clientType) {
+            query.clientType = new RegExp(`^${clientType.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
+        }
 
         const prices = await ReferralPrice.find(query).lean();
         const filtered = prices.filter(p => p.price > 0);
@@ -1411,21 +1435,29 @@ app.get('/api/storefront-prices', async (req, res) => {
 
         // Attach displayConfig from BasePrice so generic-package.html can apply
         // provider customisations (header colour, page title, section, etc.)
+        // Uses case-insensitive matching so minor name differences don't break lookup.
         if (filtered.length) {
             const providerNames = [...new Set(filtered.map(p => p.provider).filter(Boolean))];
             const basePriceRows = await BasePrice.find(
-                { provider: { $in: providerNames } },
+                {},
                 { provider: 1, displayConfig: 1 }
             ).lean();
+
+            // Build case-insensitive map: normalised provider name → displayConfig
             const dcMap = {};
             basePriceRows.forEach(row => {
-                if (row.provider && row.displayConfig && !dcMap[row.provider]) {
-                    dcMap[row.provider] = row.displayConfig;
+                if (row.provider && row.displayConfig) {
+                    const key = row.provider.toLowerCase().trim();
+                    if (!dcMap[key]) dcMap[key] = row.displayConfig;
                 }
             });
+
             filtered.forEach(p => {
-                if (p.provider && dcMap[p.provider]) {
-                    p.displayConfig = dcMap[p.provider];
+                if (p.provider) {
+                    const key = p.provider.toLowerCase().trim();
+                    if (dcMap[key]) {
+                        p.displayConfig = dcMap[key];
+                    }
                 }
             });
         }
@@ -1594,16 +1626,66 @@ app.post('/api/admin/base-prices/bulk', auth, admin, async (req, res) => {
     }
 });
 
+// GET display config for a single provider (including sentinel rows)
+app.get('/api/admin/base-prices/display-config-get', auth, admin, async (req, res) => {
+    try {
+        const { provider } = req.query;
+        if (!provider) return res.status(400).json({ message: 'provider is required' });
+        const row = await BasePrice.findOne(
+            { provider: new RegExp(`^${provider.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') },
+            { displayConfig: 1 }
+        ).lean();
+        res.json({ displayConfig: row?.displayConfig || null });
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+});
+
+// POST: sync all existing ReferralPrice provider names into Provider collection
+// Call this once to fix existing name mismatches — safe to call multiple times.
+app.post('/api/admin/sync-provider-names', auth, admin, async (req, res) => {
+    try {
+        const referralPrices = await ReferralPrice.find({}, { provider: 1 }).lean();
+        const names = [...new Set(referralPrices.map(p => p.provider).filter(Boolean))];
+        let synced = 0;
+        for (const name of names) {
+            const result = await Provider.findOneAndUpdate(
+                { name },
+                { $setOnInsert: { name } },
+                { upsert: true, new: false }
+            );
+            if (!result) synced++;
+        }
+        res.json({ message: `Synced ${synced} new provider(s) from ReferralPrice`, total: names.length, names });
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+});
+
 app.post('/api/admin/base-prices/display-config', auth, admin, async (req, res) => {
     try {
         const { provider, displayConfig } = req.body;
         if (!provider) {
             return res.status(400).json({ message: 'Provider name is required' });
         }
-        await BasePrice.updateMany(
+
+        // Update all existing BasePrice rows for this provider
+        const result = await BasePrice.updateMany(
             { provider },
             { $set: { displayConfig } }
         );
+
+        // If no BasePrice rows exist for this provider (e.g. AT Ishare, Results_checkers
+        // that only have ReferralPrice entries), create a sentinel row so displayConfig
+        // has a home and will be returned by GET /api/storefront-prices.
+        if (result.matchedCount === 0) {
+            await BasePrice.findOneAndUpdate(
+                { provider, packageName: '__config__' },
+                { $set: { provider, packageName: '__config__', clientType: 'config', price: 0, displayConfig } },
+                { upsert: true }
+            );
+        }
+
         res.json({ message: 'Display configuration saved successfully' });
     } catch (err) {
         res.status(500).json({ message: err.message });
