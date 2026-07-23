@@ -286,38 +286,34 @@ class UniversalAPIHandler {
         }
 
         // Build payload with mapped fields
+        // Trim both key and value of each mapping entry to avoid trailing-space bugs
+        // from copy-paste in the admin panel (e.g. "capacity " → "capacity")
         for (const [ourField, apiField] of Object.entries(actualMapping)) {
-            if (ourField === 'capacity') {
-                // Extract the leading numeric value from whatever apiCapacity resolved to.
-                // Most APIs (iGet) want a plain number.  DataHub wants a string ("1", "2"…).
-                // If the config sets capacityAsString: true, keep it as a string.
+            const src  = String(ourField).trim();
+            const dest = String(apiField).trim();
+            if (!src || !dest) continue;
+
+            if (src === 'capacity') {
                 const numericCapacity = parseFloat(
                     String(apiCapacity).match(/^(\d+(?:\.\d+)?)/)?.[1] ?? apiCapacity
                 );
                 const useString = config && config.capacityAsString;
-                payload[apiField] = isNaN(numericCapacity)
+                payload[dest] = isNaN(numericCapacity)
                     ? apiCapacity
                     : (useString ? String(numericCapacity) : numericCapacity);
 
-                // iGet API also requires a separate bundleType field alongside capacity.
-                // e.g. { capacity: 5, bundleType: "Telecel-5959" }
-                // Store apiNetwork on the packageMapping entry to supply this value.
-                // Skip this for providers that use apiNetwork for the network key itself
-                // (DataHub) — it will be applied in the 'network' branch instead.
                 if (pkgMap && pkgMap.apiNetwork && !(config && config.networkKeyFromMapping)) {
                     payload['bundleType'] = pkgMap.apiNetwork;
                 }
-            } else if (ourField === 'network') {
-                // Use config.networkKey if set (e.g. DataHub requires "YELLO" for MTN).
-                // Falls back to pkgMap.apiNetwork, then the raw provider/network name.
-                payload[apiField] = config.networkKey
+            } else if (src === 'network') {
+                payload[dest] = config.networkKey
                     || (pkgMap && pkgMap.apiNetwork)
                     || orderData.network
                     || orderData.provider;
-            } else if (ourField === 'reference') {
-                payload[apiField] = orderData.reference || `REF-${Date.now()}`;
-            } else if (orderData[ourField] !== undefined) {
-                payload[apiField] = orderData[ourField];
+            } else if (src === 'reference') {
+                payload[dest] = orderData.reference || `REF-${Date.now()}`;
+            } else if (orderData[src] !== undefined) {
+                payload[dest] = orderData[src];
             }
         }
 
@@ -460,9 +456,10 @@ class UniversalAPIHandler {
     static sanitizeString(str) {
         if (typeof str !== 'string') return str;
         return str
-            .replace(/[\u2022\u2023\u2024\u2025\u2043\u22C5]/g, '-') // bullet points
-            .replace(/[\u200B-\u200D\uFEFF]/g, '') // zero-width characters
-            .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, ''); // control characters
+            .trim()                                                              // strip leading/trailing whitespace
+            .replace(/[\u2022\u2023\u2024\u2025\u2043\u22C5]/g, '-')            // bullet points
+            .replace(/[\u200B-\u200D\uFEFF]/g, '')                              // zero-width characters
+            .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');                // control characters
     }
 
     /**
