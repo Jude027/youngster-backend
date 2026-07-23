@@ -2096,7 +2096,7 @@ app.get('/api/admin/stats', auth, admin, async (req, res) => {
         ]);
         const totalVolume = volumeAggr.length > 0 ? volumeAggr[0].total : 0;
         const revenueAggr = await Transaction.aggregate([
-            { $match: { status: { $in: ['complete', 'completed', 'success'] } } },
+            { $match: { status: { $in: ['complete', 'completed', 'success', 'Completed'] } } },
             { $group: { _id: null, total: { $sum: '$amount' } } }
         ]);
         const totalRevenue = revenueAggr.length > 0 ? revenueAggr[0].total : 0;
