@@ -339,39 +339,58 @@ class UniversalAPIHandler {
         }
 
         // ── Provider-specific overrides ──────────────────────────────────────
-        // XpresPortal AT Ishare — POST /order/at
-        // Required fields per openapi.json: type, phone (233XXXXXXXXX), volume, offerSlug, webhookUrl
+        // XpresPortal AT Ishare — POST /api/v1/order/airteltigo
+        // Required fields: type, phone (233XXXXXXXXX no +), volume (in MB), offerSlug, webhookUrl
+        // Minimum volume: 50 MB. Capacity from orderData is in GB — convert to MB.
         const providerKey = (orderData.provider || orderData.network || '').toLowerCase().trim();
         if (providerKey === 'at ishare' || providerKey === 'at_ishare' || providerKey === 'airteltigo') {
             const phoneVal = payload.phone || payload.msisdn || payload.recipient || payload.phoneNumber || payload.recipientNumber || orderData.phoneNumber;
-            const volumeVal = payload.volume !== undefined ? payload.volume : (payload.capacity !== undefined ? payload.capacity : orderData.capacity);
+
+            // Convert GB → MB. orderData.capacity is in GB (e.g. 1 for 1GB → 1024 MB)
+            const rawCapacity = payload.volume !== undefined ? payload.volume
+                : (payload.capacity !== undefined ? payload.capacity : orderData.capacity);
+            const capacityNum = parseFloat(String(rawCapacity).match(/^(\d+(?:\.\d+)?)/)?.[1] ?? rawCapacity);
+            // If value is already in MB (≥ 50) leave it; otherwise treat as GB and convert
+            const volumeMB = !isNaN(capacityNum)
+                ? (capacityNum < 50 ? Math.round(capacityNum * 1024) : Math.round(capacityNum))
+                : 1024;
+
             const offerSlugVal = payload.offerSlug || 'airteltigo_ishare_portal';
 
-            // Clear other fields to match the exact spec
-            for (const key in payload) {
-                delete payload[key];
-            }
+            // Clear all previous fields — XpresPortal rejects unknown fields
+            for (const key in payload) delete payload[key];
 
-            payload.type = 'single';
-            payload.phone = formatGhanaPhone(phoneVal, 'international');
-            payload.volume = String(volumeVal);
+            payload.type      = 'single';
+            payload.phone     = formatGhanaPhone(phoneVal, 'international').replace(/^\+/, ''); // 233XXXXXXXXX no +
+            payload.volume    = volumeMB;
             payload.offerSlug = offerSlugVal;
             payload.webhookUrl = process.env.XPRES_WEBHOOK_URL
                 || 'https://youngster-backend-production.up.railway.app/api/webhooks/xpresportal';
+
+            console.log('[UniversalAPIHandler] AT Ishare payload:', payload);
         }
 
-        // XpresPortal AT Bigtime — POST /order/at (same base, different offerSlug)
+        // XpresPortal AT Bigtime — POST /api/v1/order/airteltigo (same endpoint, different offerSlug)
+        // Volume also in MB.
         if (providerKey === 'at bigtime' || providerKey === 'at_bigtime') {
-            payload.type = payload.type || 'single';
-            payload.offerSlug = payload.offerSlug || 'airteltigo_bigtime';
+            const phoneVal = payload.phone || payload.msisdn || payload.recipient || payload.phoneNumber || orderData.phoneNumber;
+            const rawCap = payload.volume !== undefined ? payload.volume
+                : (payload.capacity !== undefined ? payload.capacity : orderData.capacity);
+            const capNum = parseFloat(String(rawCap).match(/^(\d+(?:\.\d+)?)/)?.[1] ?? rawCap);
+            const volumeMB = !isNaN(capNum)
+                ? (capNum < 50 ? Math.round(capNum * 1024) : Math.round(capNum))
+                : 1024;
+
+            for (const key in payload) delete payload[key];
+
+            payload.type      = 'single';
+            payload.phone     = formatGhanaPhone(phoneVal, 'international').replace(/^\+/, '');
+            payload.volume    = volumeMB;
+            payload.offerSlug = 'airteltigo_bigtime';
             payload.webhookUrl = process.env.XPRES_WEBHOOK_URL
                 || 'https://youngster-backend-production.up.railway.app/api/webhooks/xpresportal';
-            if (payload.msisdn && !payload.phone) { payload.phone = payload.msisdn; delete payload.msisdn; }
-            if (payload.recipient && !payload.phone) { payload.phone = payload.recipient; delete payload.recipient; }
-            if (payload.capacity !== undefined && payload.volume === undefined) {
-                payload.volume = String(payload.capacity); delete payload.capacity;
-            }
-            if (payload.phone) payload.phone = formatGhanaPhone(payload.phone, 'international');
+
+            console.log('[UniversalAPIHandler] AT Bigtime payload:', payload);
         }
 
         // XpresPortal Telecel — POST /order/telecel
