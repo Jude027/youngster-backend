@@ -928,6 +928,11 @@ const admin = (req, res, next) => {
     next();
 };
 
+// ==================== HEALTH CHECK ====================
+app.get('/', (req, res) => {
+    res.json({ status: 'ok', message: 'Youngster Backend API is running', timestamp: new Date().toISOString() });
+});
+
 // ==================== TEST ENDPOINT ====================
 app.get('/api/test', (req, res) => {
     console.log('✅ [SERVER] Test endpoint called - backend is reachable!');
