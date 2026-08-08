@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "server (6).js",
+      "use": "@vercel/node"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "server (6).js"
+    }
+  ],
+  "crons": [
+    {
+      "path": "/api/cron/update-order-status",
+      "schedule": "*/10 * * * *"
+    }
+  ]
+}
