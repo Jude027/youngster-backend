@@ -10,7 +10,6 @@ const dotenv = require('dotenv');
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const fs = require('fs');
 const path = require('path');
 const util = require('util');
 
@@ -27,40 +26,20 @@ const PaymentGateway = require('./models/PaymentGateway');
 const PaymentTransaction = require('./models/PaymentTransaction');
 const PaymentService = require('./services/PaymentService');
 const { startOrderStatusUpdater } = require('./order-status-updater');
-
 dotenv.config();
-
-const runtimeLogFile = path.join(__dirname, 'runtime.log');
-const originalConsole = {
-    log: console.log.bind(console),
-    warn: console.warn.bind(console),
-    error: console.error.bind(console)
-};
 
 function formatLogArgs(args) {
     return util.format(...args);
 }
 
-function writeRuntimeLog(level, line) {
-    try {
-        fs.appendFileSync(runtimeLogFile, `[${new Date().toISOString()}] [${level}] ${line}\n`);
-    } catch (_) { }
-}
-
 console.log = (...args) => {
-    const line = formatLogArgs(args);
-    process.stdout.write(line + '\n');
-    writeRuntimeLog('INFO', line);
+    process.stdout.write(formatLogArgs(args) + '\n');
 };
 console.warn = (...args) => {
-    const line = formatLogArgs(args);
-    process.stderr.write(line + '\n');
-    writeRuntimeLog('WARN', line);
+    process.stderr.write(formatLogArgs(args) + '\n');
 };
 console.error = (...args) => {
-    const line = formatLogArgs(args);
-    process.stderr.write(line + '\n');
-    writeRuntimeLog('ERROR', line);
+    process.stderr.write(formatLogArgs(args) + '\n');
 };
 
 const app = express();
@@ -3498,9 +3477,39 @@ async function handleXpresPortalWebhook(req, res) {
 app.post('/api/webhooks/xpresportal', handleXpresPortalWebhook);
 app.get('/api/webhooks/xpresportal', handleXpresPortalWebhook);
 
-// ==================== START SERVER ====================
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-    startOrderStatusUpdater();
+// ==================== VERCEL CRON: ORDER STATUS UPDATER ====================
+// Called by Vercel Cron every 10 minutes to check pending/processing orders.
+// Secured with CRON_SECRET env var — set the same value in Vercel project settings.
+// Vercel cron config is in vercel.json.
+app.get('/api/cron/update-order-status', async (req, res) => {
+    // Verify the request is from Vercel Cron (or allow local dev without secret)
+    const secret = process.env.CRON_SECRET;
+    if (secret) {
+        const authHeader = req.headers['authorization'];
+        if (authHeader !== `Bearer ${secret}`) {
+            return res.status(401).json({ error: 'Unauthorized' });
+        }
+    }
+
+    try {
+        const { checkPendingOrders } = require('./order-status-updater');
+        await checkPendingOrders();
+        res.json({ success: true, message: 'Order status check completed', timestamp: new Date().toISOString() });
+    } catch (err) {
+        console.error('[Cron] Order status update error:', err.message);
+        res.status(500).json({ success: false, error: err.message });
+    }
 });
+
+// ==================== START SERVER ====================
+// On Vercel, module.exports = app is used and listen is not called.
+// Locally, listen on PORT as normal.
+if (require.main === module) {
+    const PORT = process.env.PORT || 5000;
+    app.listen(PORT, () => {
+        console.log(`Server running on port ${PORT}`);
+        startOrderStatusUpdater();
+    });
+}
+
+module.exports = app;
