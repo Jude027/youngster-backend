@@ -13,7 +13,6 @@ const Order         = require('./models/Order');
 const Provider      = require('./models/Provider');
 const ProviderAPILog = require('./models/ProviderAPILog');
 const UniversalAPIHandler = require('./services/UniversalAPIHandler');
-const IGetBrowserAutomation = require('./services/IGetBrowserAutomation');
 
 // ── Config ────────────────────────────────────────────────────────────────────
 const POLL_INTERVAL_MS   = Number(process.env.ORDER_STATUS_POLL_INTERVAL_MS || 10 * 60 * 1000);
@@ -142,39 +141,6 @@ async function checkAndUpdateOrder(order) {
 }
 
 // ── Start the background job ──────────────────────────────────────────────────
-async function checkAndUpdateIGetTelecelOrder(order) {
-    console.log(`[OrderStatusUpdater] Checking iGet transactions for Telecel order ${order._id}`);
-
-    const result = await IGetBrowserAutomation.checkTelecelOrderStatus({
-        ...order,
-        orderId: order._id,
-        phoneNumber: order.phoneNumber || order.beneficiary,
-        packageName: order.packageName || order.bundleSize || order.bundle_size || order.bundle
-    });
-
-    await Order.findByIdAndUpdate(order._id, { lastStatusUpdate: new Date() });
-
-    if (result.completed) {
-        await Order.findByIdAndUpdate(order._id, {
-            status: 'Completed',
-            completed: new Date(),
-            lastStatusUpdate: new Date()
-        });
-        console.log(`[OrderStatusUpdater] ✅ Telecel order ${order._id} updated: ${order.status} → Completed`);
-        return;
-    }
-
-    if (result.failed) {
-        await Order.findByIdAndUpdate(order._id, {
-            status: 'Failed',
-            lastStatusUpdate: new Date()
-        });
-        console.log(`[OrderStatusUpdater] ❌ Telecel order ${order._id} updated: ${order.status} → Failed`);
-        return;
-    }
-
-    console.log(`[OrderStatusUpdater] Telecel order ${order._id} still pending on iGet (rows found: ${result.data?.totalRows ?? 0}); leaving status as ${order.status}`);
-}
 
 function startOrderStatusUpdater() {
     console.log(`[OrderStatusUpdater] Started - polling every ${POLL_INTERVAL_MS / 60000} minutes; checking pending orders from the last ${MAX_ORDER_AGE_HOURS} hour(s) only`);
