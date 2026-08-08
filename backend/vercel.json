@@ -15,7 +15,7 @@
   "crons": [
     {
       "path": "/api/cron/update-order-status",
-      "schedule": "*/10 * * * *"
+      "schedule": "0 6 * * *"
     }
   ]
 }
