@@ -365,7 +365,7 @@ class UniversalAPIHandler {
             payload.volume    = volumeMB;
             payload.offerSlug = offerSlugVal;
             payload.webhookUrl = process.env.XPRES_WEBHOOK_URL
-                || 'https://youngster-backend-production.up.railway.app/api/webhooks/xpresportal';
+                || `${process.env.BACKEND_URL || 'https://youngster-backend-production.up.railway.app'}/api/webhooks/xpresportal`;
 
             console.log('[UniversalAPIHandler] AT Ishare payload:', payload);
         }
@@ -388,7 +388,7 @@ class UniversalAPIHandler {
             payload.volume    = volumeMB;
             payload.offerSlug = 'airteltigo_bigtime';
             payload.webhookUrl = process.env.XPRES_WEBHOOK_URL
-                || 'https://youngster-backend-production.up.railway.app/api/webhooks/xpresportal';
+                || `${process.env.BACKEND_URL || 'https://youngster-backend-production.up.railway.app'}/api/webhooks/xpresportal`;
 
             console.log('[UniversalAPIHandler] AT Bigtime payload:', payload);
         }
