@@ -10,7 +10,7 @@ function authHeaders() {
 function checkAuth() {
     const token = localStorage.getItem('token');
     if (!token) {
-        window.location.href = '../Registration form/login_and_signup.html';
+        window.location.href = '../Registration-form/login_and_signup.html';
         return false;
     }
     return true;
