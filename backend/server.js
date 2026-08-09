@@ -1693,7 +1693,7 @@ if (fs_sync.existsSync(ADMIN_DIR)) {
     app.use('/Admin', express.static(ADMIN_DIR, { index: false, redirect: false }));
 }
 
-const FRONTEND_BASE = process.env.FRONTEND_URL || 'https://youngster-frontend-production.up.railway.app';
+const FRONTEND_BASE = process.env.FRONTEND_URL || 'https://youngster-frontend.vercel.app';
 
 app.get('/referral/:slug', (req, res) => {
     // On Railway the frontend is a separate service — redirect there with the store slug
