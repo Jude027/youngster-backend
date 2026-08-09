@@ -50,6 +50,7 @@ app.use(cors({
 
         const allowedOrigins = [
             'https://youngster-frontend-production.up.railway.app',
+            'https://youngster-frontend.vercel.app',
             'https://youngster-backend.vercel.app',
             'https://xpresportal.app'
         ];
