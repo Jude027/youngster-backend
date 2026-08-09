@@ -3,7 +3,7 @@ const API_BASE = 'http://localhost:5000/api';
 let token = localStorage.getItem('token');
 
 if (!token) {
-    window.location.href = '../Registration%20form/login_and_signup.html';
+    window.location.href = '../Registration-form/login_and_signup.html';
 }
 
 function authHeaders() {
