@@ -1696,19 +1696,8 @@ if (fs_sync.existsSync(ADMIN_DIR)) {
 const FRONTEND_BASE = process.env.FRONTEND_URL || 'https://youngster-frontend.vercel.app';
 
 app.get('/referral/:slug', (req, res) => {
-    // On Railway the frontend is a separate service — redirect there with the store slug
-    if (!fs_sync.existsSync(DASHBOARD_DIR)) {
-        const client = req.query.client ? `&client=${encodeURIComponent(req.query.client)}` : '';
-        return res.redirect(302, `${FRONTEND_BASE}/Dashboard/dashboard2.html?store=${encodeURIComponent(req.params.slug)}${client}`);
-    }
-    const filePath = path.resolve(DASHBOARD_DIR, 'dashboard2.html');
-    console.log('Serving:', filePath, '| Exists:', fs_sync.existsSync(filePath));
-    if (!fs_sync.existsSync(filePath)) {
-        return res.status(404).send('File not found: ' + filePath);
-    }
-    res.sendFile(filePath, function (err) {
-        if (err) { console.error('sendFile error:', err.message); res.status(500).send(err.message); }
-    });
+    const client = req.query.client ? `&client=${encodeURIComponent(req.query.client)}` : '';
+    return res.redirect(302, `${FRONTEND_BASE}/Dashboard/dashboard2.html?store=${encodeURIComponent(req.params.slug)}${client}`);
 });
 
 // Redirect old ?store= URLs to clean /referral/ URLs
