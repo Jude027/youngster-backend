@@ -50,6 +50,7 @@ app.use(cors({
 
         const allowedOrigins = [
             'https://youngster-frontend-production.up.railway.app',
+            'https://youngster-backend.vercel.app',
             'https://xpresportal.app'
         ];
 
@@ -59,6 +60,7 @@ app.use(cors({
             origin.includes('127.0.0.1') ||
             origin.includes('trycloudflare.com') ||
             origin.includes('railway.app') ||
+            origin.includes('vercel.app') ||
             /^http:\/\/172\.\d+\.\d+\.\d+(:\d+)?$/.test(origin) ||
             /^http:\/\/192\.168\.\d+\.\d+(:\d+)?$/.test(origin);
 
