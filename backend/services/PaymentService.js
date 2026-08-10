@@ -2,17 +2,11 @@
 // Handles payment processing through Moolre payment gateway
 
 const crypto = require('crypto');
-const fs = require('fs');
-const path = require('path');
 const PaymentGateway = require('../models/PaymentGateway');
 const PaymentTransaction = require('../models/PaymentTransaction');
 
-// File-based logger for debugging
+// Debug logger — console only (no file writes, Vercel filesystem is read-only)
 function debugLog(label, data) {
-    const timestamp = new Date().toISOString();
-    const message = `[${timestamp}] ${label}: ${JSON.stringify(data, null, 2)}\n`;
-    const logFile = path.join(__dirname, '../payment-debug.log');
-    fs.appendFileSync(logFile, message);
     console.log(label, data);
 }
 
