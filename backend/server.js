@@ -3088,6 +3088,60 @@ app.post('/api/payment/resend-otp', async (req, res) => {
     }
 });
 
+// ── Internal: trigger Moolre USSD push (step 3) after OTP verification ──────
+// Called by PaymentService.verifyOtp as a fire-and-forget self-call so the
+// long-running Moolre request doesn't block the OTP verify response.
+// Vercel runs this as a separate function invocation — no timeout from the OTP call.
+app.post('/api/payment/trigger-ussd', async (req, res) => {
+    const { transactionId, _internal } = req.body || {};
+    if (!transactionId) return res.status(400).json({ error: 'transactionId required' });
+
+    // Respond immediately — Moolre call happens after response is sent
+    res.json({ ok: true });
+
+    try {
+        const transaction = await PaymentTransaction.findOne({ transactionId });
+        if (!transaction) return;
+
+        const gateway = await PaymentGateway.findOne({ name: transaction.paymentGateway, enabled: true });
+        if (!gateway) return;
+
+        const CHANNEL_MAP = { 'MTN': '13', 'MTN EXPRESS': '13', 'TELECEL': '6', 'AT': '7', 'AT ISHARE': '7', 'AT BIGTIME': '7', 'AIRTELTIGO': '7' };
+        const channelCode   = CHANNEL_MAP[(transaction.provider || '').toUpperCase().trim()] || '13';
+        const accountnumber = gateway.accountNumber || gateway.apiKey || '';
+        const baseUrl       = (gateway.apiBaseUrl || 'https://api.moolre.com').replace(/\/+$/, '');
+
+        const body = {
+            type:          1,
+            channel:       channelCode,
+            currency:      'GHS',
+            payer:         transaction.phoneNumber,
+            amount:        parseFloat(transaction.totalAmount.toFixed(2)),
+            externalref:   transactionId,
+            reference:     transaction.description || `${transaction.provider} Bundle`,
+            accountnumber: accountnumber,
+        };
+
+        const headers = PaymentService.getMoolreHeaders(gateway);
+        const payResponse = await fetch(`${baseUrl}/open/transact/payment`, {
+            method: 'POST', headers, body: JSON.stringify(body)
+        });
+
+        const payRaw  = await payResponse.text();
+        let payData;
+        try { payData = JSON.parse(payRaw); } catch { return; }
+
+        if (payData.code === 'TP13' || String(payData.status ?? '') === '1') {
+            const gatewayRef = payData.data?.transactionid || payData.data?.id || '';
+            if (gatewayRef) {
+                await PaymentTransaction.updateOne({ transactionId }, { $set: { gatewayTransactionId: gatewayRef } });
+            }
+        }
+    } catch (err) {
+        console.error('[trigger-ussd] Error:', err.message);
+    }
+});
+
 // Verify OTP for Moolre payment (called when Moolre returns TP14 on initiation)
 app.post('/api/payment/verify-otp', async (req, res) => {
     try {
