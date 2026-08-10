@@ -904,12 +904,43 @@ async function submitOrderToProvider(order, orderData) {
     return result;
 }
 
-// Connect to MongoDB
-mongoose.connect(process.env.MONGO_URI, {
-    useNewUrlParser: true,
-    useUnifiedTopology: true
-}).then(() => console.log('MongoDB Connected'))
-    .catch(err => console.error('MongoDB connection error:', err));
+// Connect to MongoDB — uses a cached connection for Vercel serverless
+// (prevents "buffering timed out" errors on cold starts)
+let mongoConnected = false;
+
+async function connectMongo() {
+    if (mongoConnected && mongoose.connection.readyState === 1) return;
+    try {
+        await mongoose.connect(process.env.MONGO_URI, {
+            useNewUrlParser: true,
+            useUnifiedTopology: true,
+            serverSelectionTimeoutMS: 10000,
+            socketTimeoutMS: 45000,
+            bufferCommands: false,
+        });
+        mongoConnected = true;
+        console.log('MongoDB Connected');
+    } catch (err) {
+        mongoConnected = false;
+        console.error('MongoDB connection error:', err.message);
+        throw err;
+    }
+}
+
+// Connect immediately on module load
+connectMongo().catch(() => {});
+
+// Middleware to ensure DB is connected before every request
+app.use(async (req, res, next) => {
+    if (mongoose.connection.readyState !== 1) {
+        try {
+            await connectMongo();
+        } catch (err) {
+            return res.status(503).json({ message: 'Database unavailable. Please try again.' });
+        }
+    }
+    next();
+});
 
 // ==================== MIDDLEWARE ====================
 const auth = (req, res, next) => {
