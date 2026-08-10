@@ -3143,17 +3143,57 @@ app.post('/api/payment/trigger-ussd', async (req, res) => {
 });
 
 // Verify OTP for Moolre payment (called when Moolre returns TP14 on initiation)
+// Responds immediately then triggers the actual Moolre OTP verification + USSD push
+// as a separate self-call to avoid Vercel's 10-second function timeout.
 app.post('/api/payment/verify-otp', async (req, res) => {
     try {
         const { transactionId, otpCode } = req.body;
         if (!transactionId || !otpCode) {
             return res.status(400).json({ success: false, message: 'transactionId and otpCode are required' });
         }
-        const result = await PaymentService.verifyOtp(transactionId, String(otpCode).trim());
-        res.json(result);
+
+        // Check transaction exists first (fast DB lookup)
+        const transaction = await PaymentTransaction.findOne({ transactionId });
+        if (!transaction) {
+            return res.status(404).json({ success: false, message: 'Transaction not found' });
+        }
+
+        // Respond immediately — the actual Moolre calls happen in a separate invocation
+        res.json({ success: true, transactionId, message: 'OTP received. A payment prompt will be sent to your phone.' });
+
+        // Fire the actual OTP verification as a separate Vercel function invocation
+        const backendUrl = process.env.BACKEND_URL || 'https://youngster-backend.vercel.app';
+        fetch(`${backendUrl}/api/payment/process-otp-internal`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ transactionId, otpCode }),
+        }).catch(() => {});
+
     } catch (err) {
-        console.error('❌ OTP verification error:', err.message);
-        res.status(400).json({ success: false, message: err.message });
+        if (!res.headersSent) {
+            res.status(400).json({ success: false, message: err.message });
+        }
+    }
+});
+
+// Internal: performs the actual Moolre OTP verification + USSD push
+// Called as a fire-and-forget self-call from /api/payment/verify-otp
+app.post('/api/payment/process-otp-internal', async (req, res) => {
+    // Respond immediately so this invocation is not blocked
+    res.json({ ok: true });
+
+    const { transactionId, otpCode } = req.body || {};
+    if (!transactionId || !otpCode) return;
+
+    try {
+        await PaymentService.verifyOtp(transactionId, String(otpCode).trim());
+    } catch (err) {
+        console.error('❌ Internal OTP processing error:', err.message);
+        // Mark transaction so frontend polling can detect the failure
+        await PaymentTransaction.updateOne(
+            { transactionId },
+            { $set: { status: 'failed', errorMessage: err.message } }
+        ).catch(() => {});
     }
 });
 
