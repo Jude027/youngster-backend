@@ -338,25 +338,74 @@ class PaymentService {
             throw new Error(otpData.message || otpData.code || 'OTP verification failed');
         }
 
-        // ── Step 2 succeeded — stamp otpVerifiedAt and respond to the frontend ──
-        // Step 3 (USSD push) runs in the background so the HTTP response is not
-        // blocked by a second Moolre round-trip (which can take 10–20 s and causes
-        // Railway's proxy to close the connection before the response arrives).
+        // ── Step 2 succeeded — stamp otpVerifiedAt ─────────────────────────
         await PaymentTransaction.updateOne(
             { transactionId },
             { $set: { otpVerifiedAt: new Date() } }
         );
-        console.log('✅ OTP verified — triggering USSD push in background', { transactionId });
+        console.log('✅ OTP verified — triggering USSD push', { transactionId });
 
-        // Fire step 3 via a self-call to /api/payment/trigger-ussd
-        // On Vercel, setImmediate is killed when the response is sent.
-        // A fire-and-forget fetch to a separate endpoint runs as its own invocation.
-        const backendUrl = process.env.BACKEND_URL || 'https://youngster-backend.vercel.app';
-        fetch(`${backendUrl}/api/payment/trigger-ussd`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ transactionId, _internal: true }),
-        }).catch(() => {}); // fire and forget — errors are non-fatal
+        // ── Step 3: send USSD push directly ────────────────────────────────
+        // On Vercel, fire-and-forget fetch() is killed when the response is sent.
+        // Run step 3 inline here and await it before returning.
+        // The Moolre call typically takes 1–3 s which is within Vercel's timeout.
+        const transaction = await PaymentTransaction.findOne({ transactionId });
+        const gateway = transaction
+            ? await PaymentGateway.findOne({ name: transaction.paymentGateway, enabled: true })
+            : null;
+
+        if (transaction && gateway) {
+            try {
+                const CHANNEL_MAP = {
+                    'MTN': '13', 'MTN EXPRESS': '13',
+                    'TELECEL': '6',
+                    'AT': '7', 'AT ISHARE': '7', 'AT BIGTIME': '7', 'AIRTELTIGO': '7'
+                };
+                const channelCode   = CHANNEL_MAP[(transaction.provider || '').toUpperCase().trim()] || '13';
+                const accountnumber = gateway.accountNumber || gateway.apiKey || '';
+                const baseUrl       = (gateway.apiBaseUrl || 'https://api.moolre.com').replace(/\/+$/, '');
+
+                const step3Body = {
+                    type:          1,
+                    channel:       channelCode,
+                    currency:      'GHS',
+                    payer:         transaction.phoneNumber,
+                    amount:        parseFloat(transaction.totalAmount.toFixed(2)),
+                    externalref:   transactionId,
+                    reference:     transaction.description || `${transaction.provider} Bundle`,
+                    accountnumber: accountnumber,
+                };
+
+                const step3Headers = this.getMoolreHeaders(gateway);
+                const payResponse  = await fetch(`${baseUrl}/open/transact/payment`, {
+                    method: 'POST',
+                    headers: step3Headers,
+                    body: JSON.stringify(step3Body),
+                });
+
+                const payRaw = await payResponse.text();
+                console.log('Moolre step-3 response:', payRaw.substring(0, 300));
+
+                let payData;
+                try { payData = JSON.parse(payRaw); } catch { payData = {}; }
+
+                if (payData.code === 'TP13' || String(payData.status ?? '') === '1') {
+                    const gatewayRef = payData.data?.transactionid || payData.data?.id || '';
+                    if (gatewayRef) {
+                        await PaymentTransaction.updateOne(
+                            { transactionId },
+                            { $set: { gatewayTransactionId: gatewayRef } }
+                        );
+                    }
+                } else if (payData.code === 'TP14') {
+                    console.warn('[verifyOtp] Step 3 returned TP14 — externalref may be reused');
+                } else if (String(payData.status ?? '') !== '1') {
+                    console.warn('[verifyOtp] Step 3 non-success:', payData.code, payData.message);
+                }
+            } catch (step3Err) {
+                console.error('[verifyOtp] Step 3 error (non-fatal):', step3Err.message);
+            }
+        }
 
         return {
             success: true,
