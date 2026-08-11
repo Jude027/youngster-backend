@@ -345,26 +345,11 @@ class PaymentService {
         );
         console.log('✅ OTP verified — triggering USSD push', { transactionId });
 
-        // ── Step 3: send USSD push directly ────────────────────────────────
+        // ── Step 3: send USSD push directly (inline, not fire-and-forget) ──────
         // On Vercel, fire-and-forget fetch() is killed when the response is sent.
-        // Run step 3 inline here and await it before returning.
-        // The Moolre call typically takes 1–3 s which is within Vercel's timeout.
-        const transaction = await PaymentTransaction.findOne({ transactionId });
-        const gateway = transaction
-            ? await PaymentGateway.findOne({ name: transaction.paymentGateway, enabled: true })
-            : null;
-
+        // Run step 3 using the already-fetched transaction and gateway objects.
         if (transaction && gateway) {
             try {
-                const CHANNEL_MAP = {
-                    'MTN': '13', 'MTN EXPRESS': '13',
-                    'TELECEL': '6',
-                    'AT': '7', 'AT ISHARE': '7', 'AT BIGTIME': '7', 'AIRTELTIGO': '7'
-                };
-                const channelCode   = CHANNEL_MAP[(transaction.provider || '').toUpperCase().trim()] || '13';
-                const accountnumber = gateway.accountNumber || gateway.apiKey || '';
-                const baseUrl       = (gateway.apiBaseUrl || 'https://api.moolre.com').replace(/\/+$/, '');
-
                 const step3Body = {
                     type:          1,
                     channel:       channelCode,
@@ -376,10 +361,9 @@ class PaymentService {
                     accountnumber: accountnumber,
                 };
 
-                const step3Headers = this.getMoolreHeaders(gateway);
                 const payResponse  = await fetch(`${baseUrl}/open/transact/payment`, {
                     method: 'POST',
-                    headers: step3Headers,
+                    headers: headers,
                     body: JSON.stringify(step3Body),
                 });
 
