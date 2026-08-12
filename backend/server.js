@@ -904,42 +904,53 @@ async function submitOrderToProvider(order, orderData) {
     return result;
 }
 
-// Connect to MongoDB — uses a cached connection for Vercel serverless
-// (prevents "buffering timed out" errors on cold starts)
-let mongoConnected = false;
+// Disable Mongoose command buffering globally — on Vercel, if a DB operation
+// fires before the connection is ready it should fail immediately with a clear
+// error rather than buffering silently and timing out.
+mongoose.set('bufferCommands', false);
+// On Vercel each function invocation may be a cold start — we must await
+// the connection before ANY mongoose operation runs.
+// bufferCommands: false means mongoose will throw immediately if not connected
+// instead of silently queuing — this surfaces the real error faster.
+let _mongoPromise = null;
 
 async function connectMongo() {
-    if (mongoConnected && mongoose.connection.readyState === 1) return;
-    try {
-        await mongoose.connect(process.env.MONGO_URI, {
-            useNewUrlParser: true,
-            useUnifiedTopology: true,
-            serverSelectionTimeoutMS: 10000,
-            socketTimeoutMS: 45000,
-            bufferCommands: false,
-        });
-        mongoConnected = true;
-        console.log('MongoDB Connected');
-    } catch (err) {
-        mongoConnected = false;
-        console.error('MongoDB connection error:', err.message);
-        throw err;
-    }
+    // Already connected — reuse the existing connection
+    if (mongoose.connection.readyState === 1) return;
+    // Connection in progress — wait for it
+    if (_mongoPromise) return _mongoPromise;
+
+    _mongoPromise = (async () => {
+        try {
+            await mongoose.connect(process.env.MONGO_URI, {
+                serverSelectionTimeoutMS: 10000,
+                socketTimeoutMS:          45000,
+                maxPoolSize:              10,
+                bufferCommands:           false,
+            });
+            console.log('MongoDB Connected');
+        } catch (err) {
+            _mongoPromise = null; // reset so next request retries
+            console.error('MongoDB connection error:', err.message);
+            throw err;
+        }
+    })();
+
+    return _mongoPromise;
 }
 
-// Connect immediately on module load
+// Attempt connection immediately on module load (warms up the connection)
 connectMongo().catch(() => {});
 
-// Middleware to ensure DB is connected before every request
+// Middleware: ensure DB is connected before every request
 app.use(async (req, res, next) => {
-    if (mongoose.connection.readyState !== 1) {
-        try {
-            await connectMongo();
-        } catch (err) {
-            return res.status(503).json({ message: 'Database unavailable. Please try again.' });
-        }
+    try {
+        await connectMongo();
+        next();
+    } catch (err) {
+        console.error('[DB] Connection failed for request:', req.path, err.message);
+        return res.status(503).json({ message: 'Database unavailable. Please try again in a moment.' });
     }
-    next();
 });
 
 // ==================== MIDDLEWARE ====================
