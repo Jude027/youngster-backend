@@ -1520,57 +1520,84 @@ app.get('/api/referral-metrics', auth, async (req, res) => {
         const now = new Date();
         const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
 
-        const orders = await Order.find({ storeSlug }).select('userId phoneNumber beneficiary created').lean();
+        // Fetch all orders for this store that have a guestSessionId.
+        // Each unique guestSessionId = one unique customer/device that visited
+        // this dealer's referral link and placed at least one order.
+        const orders = await Order.find({
+            storeSlug,
+            guestSessionId: { $ne: null, $exists: true }
+        }).select('guestSessionId beneficiary phoneNumber transactionId created').lean();
 
-        const referralMap = new Map();
+        // Also pull payment phone numbers from PaymentTransaction records
+        // so we can show who actually paid (not just who received the bundle).
+        const transactionIds = orders.map(o => o.transactionId).filter(Boolean);
+        const paymentTxns = await PaymentTransaction.find({
+            transactionId: { $in: transactionIds }
+        }).select('transactionId phoneNumber').lean();
+        const paymentPhoneMap = new Map(paymentTxns.map(t => [t.transactionId, t.phoneNumber]));
+
+        // Build a map: guestSessionId → { lastOrder, orderCount, paymentPhone, beneficiaryPhone }
+        const sessionMap = new Map();
         for (const order of orders) {
-            const userKey = order.userId ? String(order.userId) : String(order.phoneNumber || order.beneficiary || 'unknown');
-            const existing = referralMap.get(userKey) || { lastOrder: null, orderCount: 0, userId: order.userId ? String(order.userId) : null, phoneNumber: order.phoneNumber || order.beneficiary || 'Unknown' };
+            const sid = order.guestSessionId;
+            if (!sid) continue;
+            const paymentPhone = order.transactionId ? paymentPhoneMap.get(order.transactionId) : null;
+            const beneficiary  = order.beneficiary || order.phoneNumber || null;
+            const existing = sessionMap.get(sid) || {
+                guestSessionId:  sid,
+                orderCount:      0,
+                lastOrder:       null,
+                paymentPhone:    paymentPhone || beneficiary || 'Unknown',
+                beneficiaryPhone: beneficiary || 'Unknown',
+            };
             existing.orderCount += 1;
+            // Track the most recent payment phone in case it changes across orders
+            if (paymentPhone) existing.paymentPhone = paymentPhone;
+            if (beneficiary)  existing.beneficiaryPhone = beneficiary;
             const created = order.created ? new Date(order.created) : null;
             if (created && (!existing.lastOrder || created > existing.lastOrder)) {
                 existing.lastOrder = created;
             }
-            referralMap.set(userKey, existing);
+            sessionMap.set(sid, existing);
         }
 
-        const active = [];
+        const active   = [];
         const inactive = [];
 
-        referralMap.forEach((item, key) => {
+        sessionMap.forEach(item => {
             if (item.lastOrder && item.lastOrder >= thirtyDaysAgo) {
-                active.push({ key, ...item });
+                active.push(item);
             } else {
-                inactive.push({ key, ...item });
+                inactive.push(item);
             }
         });
 
-        const userIds = Array.from(new Set(active.concat(inactive).map(item => item.userId).filter(Boolean)));
-        const users = await User.find({ _id: { $in: userIds } })
-            .select('username businessName email storeSlug')
-            .lean();
-        const userMap = new Map(users.map(u => [String(u._id), u]));
+        // Sort by most recent order
+        const sortByRecent = (a, b) => (b.lastOrder || 0) - (a.lastOrder || 0);
 
-        const formatReferral = item => {
-            const user = item.userId ? userMap.get(item.userId) : null;
+        const formatItem = item => {
+            // Show payment phone (person who paid) and beneficiary (recipient)
+            // They may be the same person or different — show both clearly.
+            const sameNumber = item.paymentPhone === item.beneficiaryPhone;
+            const label = sameNumber
+                ? item.paymentPhone
+                : `${item.paymentPhone} → ${item.beneficiaryPhone}`;
             return {
-                id: item.key,
-                label: user?.businessName || user?.username || user?.email || item.phoneNumber || 'Unknown referral',
-                lastOrder: item.lastOrder,
-                orderCount: item.orderCount,
-                storeSlug: user?.storeSlug || null
+                id:               item.guestSessionId,
+                label,
+                paymentPhone:     item.paymentPhone,
+                beneficiaryPhone: item.beneficiaryPhone,
+                lastOrder:        item.lastOrder,
+                orderCount:       item.orderCount,
             };
         };
 
-        const activeReferrals = active.map(formatReferral).sort((a, b) => (b.orderCount || 0) - (a.orderCount || 0)).slice(0, 10);
-        const inactiveReferrals = inactive.map(formatReferral).sort((a, b) => (b.orderCount || 0) - (a.orderCount || 0)).slice(0, 10);
-
         res.json({
-            totalReferrals: referralMap.size,
-            activeReferrals: active.length,
-            inactiveReferrals: inactive.length,
-            activeReferralsList: activeReferrals,
-            inactiveReferralsList: inactiveReferrals
+            totalReferrals:      sessionMap.size,
+            activeReferrals:     active.length,
+            inactiveReferrals:   inactive.length,
+            activeReferralsList:   active.sort(sortByRecent).slice(0, 10).map(formatItem),
+            inactiveReferralsList: inactive.sort(sortByRecent).slice(0, 10).map(formatItem),
         });
     } catch (err) {
         console.error('[ReferralMetrics] Error', err);
