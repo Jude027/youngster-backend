@@ -2956,8 +2956,8 @@ app.post('/api/payment/initiate', async (req, res) => {
         const result = await PaymentService.initiatePayment(gatewayName, {
             phoneNumber,
             amount,
-            provider: resolvedOrderProvider,
-            orderProvider: resolvedOrderProvider,
+            provider: resolvedPaymentNetwork,   // MoMo network for Moolre channel (MTN/Telecel/AirtelTigo)
+            orderProvider: resolvedOrderProvider, // data bundle provider (Telecel/AT Ishare/etc.)
             paymentNetwork: resolvedPaymentNetwork,
             description,
             packageName: resolvedPackageName,
