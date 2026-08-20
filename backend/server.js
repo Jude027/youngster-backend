@@ -670,6 +670,21 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
         || paymentTransaction.metadata?.packageProvider
         || paymentTransaction.provider;
 
+    // For MTN AFA registrations, embed the customer details in the report
+    // so they're visible in the order table.
+    const isAFA = /mtn.?afa/i.test(resolvedProvider || '');
+    const extra = paymentTransaction.metadata?.extra || {};
+    const orderReport = isAFA && extra.fullname
+        ? [
+            `Name: ${extra.fullname}`,
+            `Phone: ${resolvedBeneficiary}`,
+            `Ghana Card: ${extra.ghanaCard || '—'}`,
+            `DOB: ${extra.dob || '—'}`,
+            `Location: ${extra.location || '—'}`,
+            `Region: ${extra.region || '—'}`,
+          ].join(' | ')
+        : `Payment via ${gatewayName} - Transaction: ${paymentTransaction.transactionId}`;
+
     const order = new Order({
         userId,
         storeSlug,
@@ -688,7 +703,7 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
         balanceAfter: balanceBefore,
         status: 'Processing',
         transactionId: paymentTransaction.transactionId,
-        report: `Payment via ${gatewayName} - Transaction: ${paymentTransaction.transactionId}`
+        report: orderReport
     });
     await order.save();
 
@@ -2954,6 +2969,7 @@ app.post('/api/payment/initiate', async (req, res) => {
                 orderProvider: resolvedOrderProvider,
                 beneficiary: resolvedBeneficiary,
                 isUnverified: Boolean(req.body.isUnverified),
+                extra: req.body.extra || {},  // AFA registration details
             }
         });
 
