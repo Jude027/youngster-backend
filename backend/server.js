@@ -3233,14 +3233,15 @@ app.post('/api/payment/verify-otp', async (req, res) => {
 // Internal: performs the actual Moolre OTP verification + USSD push
 // Called as a fire-and-forget self-call from /api/payment/verify-otp
 app.post('/api/payment/process-otp-internal', async (req, res) => {
-    // Respond immediately so this invocation is not blocked
-    res.json({ ok: true });
-
     const { transactionId, otpCode } = req.body || {};
-    if (!transactionId || !otpCode) return;
+    if (!transactionId || !otpCode) {
+        return res.json({ ok: false, error: 'missing params' });
+    }
 
     try {
+        // Run verifyOtp BEFORE responding — on Vercel, code after res.json() is killed.
         await PaymentService.verifyOtp(transactionId, String(otpCode).trim());
+        res.json({ ok: true });
     } catch (err) {
         console.error('❌ Internal OTP processing error:', err.message);
         // Mark transaction so frontend polling can detect the failure
@@ -3248,6 +3249,7 @@ app.post('/api/payment/process-otp-internal', async (req, res) => {
             { transactionId },
             { $set: { status: 'failed', errorMessage: err.message } }
         ).catch(() => {});
+        res.json({ ok: false, error: err.message });
     }
 });
 
