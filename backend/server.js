@@ -485,7 +485,7 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
     });
 
     // ── Duplicate guard ───────────────────────────────────────────────────────
-    // Skip if orderId is the 'CREATING' sentinel — mid-creation by another call.
+    // Skip if orderId is already a real ObjectId (order was fully created).
     if (paymentTransaction.orderId && paymentTransaction.orderId !== 'CREATING') {
         const existingOrder = await Order.findById(paymentTransaction.orderId);
         console.log('[PaidOrder] orderId guard —', existingOrder ? 'order found' : 'order NOT found', {
@@ -634,18 +634,17 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
     }
 
     // Atomically claim this transaction so concurrent calls can't both pass.
-    // Use a unique sentinel string to mark "in progress" — not null, which
-    // is the default and would be re-matched on every subsequent poll.
-    const CLAIM_SENTINEL = 'CREATING';
+    // Uses a dedicated boolean flag 'orderCreating' so we don't corrupt the
+    // orderId field (which is typed as ObjectId and rejects string sentinels).
     const claimed = await PaymentTransaction.findOneAndUpdate(
         {
             transactionId: paymentTransaction.transactionId,
             $or: [
-                { orderId: { $exists: false } },
-                { orderId: { $in: [null, undefined] } }
+                { orderCreating: { $exists: false } },
+                { orderCreating: false }
             ]
         },
-        { $set: { orderId: CLAIM_SENTINEL } }, // non-null sentinel
+        { $set: { orderCreating: true } },
         { new: false }
     );
     console.log('[PaidOrder] Claim result:', claimed ? 'claimed OK' : 'ALREADY CLAIMED — skipping', {
