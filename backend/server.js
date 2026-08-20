@@ -485,7 +485,8 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
     });
 
     // ── Duplicate guard ───────────────────────────────────────────────────────
-    if (paymentTransaction.orderId) {
+    // Skip if orderId is the 'CREATING' sentinel — mid-creation by another call.
+    if (paymentTransaction.orderId && paymentTransaction.orderId !== 'CREATING') {
         const existingOrder = await Order.findById(paymentTransaction.orderId);
         console.log('[PaidOrder] orderId guard —', existingOrder ? 'order found' : 'order NOT found', {
             orderId: paymentTransaction.orderId?.toString()
@@ -563,7 +564,8 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
         }
     }
 
-    // Check by transactionId — catches the race where orderId isn't stamped yet
+    // Check by transactionId — catches the race where orderId isn't stamped yet.
+    // Skip if orderId is the 'CREATING' sentinel — that means we're mid-creation.
     const existingByTxn = await Order.findOne({ transactionId: paymentTransaction.transactionId });
     if (existingByTxn) {
         console.log('[PaidOrder] Order already exists for transactionId — checking for missing Transaction record', {
@@ -631,10 +633,19 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
         return existingByTxn._id;
     }
 
-    // Atomically claim this transaction so concurrent calls can't both pass
+    // Atomically claim this transaction so concurrent calls can't both pass.
+    // Use a unique sentinel string to mark "in progress" — not null, which
+    // is the default and would be re-matched on every subsequent poll.
+    const CLAIM_SENTINEL = 'CREATING';
     const claimed = await PaymentTransaction.findOneAndUpdate(
-        { transactionId: paymentTransaction.transactionId, $or: [{ orderId: { $exists: false } }, { orderId: null }] },
-        { $set: { orderId: null } }, // placeholder — real orderId set below
+        {
+            transactionId: paymentTransaction.transactionId,
+            $or: [
+                { orderId: { $exists: false } },
+                { orderId: { $in: [null, undefined] } }
+            ]
+        },
+        { $set: { orderId: CLAIM_SENTINEL } }, // non-null sentinel
         { new: false }
     );
     console.log('[PaidOrder] Claim result:', claimed ? 'claimed OK' : 'ALREADY CLAIMED — skipping', {
