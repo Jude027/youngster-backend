@@ -809,12 +809,11 @@ async function submitOrderToProvider(order, orderData) {
         const provider = await Provider.findOne({ name: providerName });
         let routing = provider?.orderRouting?.handler || 'auto';
 
-        // Unverified numbers (failed beneficiary check) are always routed to
-        // WhatsApp Notifier — the API providers (DataHub etc.) reject them.
-        // The admin doesn't need any extra config; this is automatic.
+        // Unverified numbers (failed beneficiary check) — skip all automated
+        // routing and leave the order as pending for manual fulfilment.
         if (orderData.isUnverified) {
-            console.log(`[ProviderSubmit] Number is unverified — forcing WhatsApp routing for ${providerName}`);
-            routing = 'whatsapp';
+            console.log(`[ProviderSubmit] Number is unverified — skipping API/WhatsApp routing, order left pending for manual fulfilment`);
+            return { success: true, message: 'Order created. Unverified number — requires manual fulfilment.', automated: false };
         }
 
         // Evaluate capacity-based routing rules if mode is 'auto'
