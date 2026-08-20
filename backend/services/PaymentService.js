@@ -75,7 +75,7 @@ class PaymentService {
                 storeSlug:      paymentData.storeSlug || paymentData.metadata?.storeSlug || '',
                 clientType:     paymentData.clientType || paymentData.metadata?.clientType || '',
                 paymentGateway: gatewayName,
-                provider:       paymentData.orderProvider || paymentData.provider,
+                provider:       paymentData.paymentNetwork || paymentData.provider,  // MoMo payment network (MTN/Telecel/AirtelTigo) — used for Moolre channel mapping
                 paymentNetwork: paymentData.paymentNetwork || paymentData.provider,
                 phoneNumber:    paymentData.phoneNumber,
                 amount:         paymentData.amount,
