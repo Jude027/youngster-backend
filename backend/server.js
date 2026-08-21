@@ -549,6 +549,14 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
                 }).catch(err => console.error('[PaidOrder] Late provider submission failed:', err.message));
             }
 
+            // Patch isUnverified onto the existing order if it's missing
+            // (covers orders created before the field was added to the schema).
+            const txIsUnverified = Boolean(paymentTransaction.isUnverified || paymentTransaction.metadata?.isUnverified);
+            if (txIsUnverified && !existingOrder.isUnverified) {
+                await Order.updateOne({ _id: existingOrder._id }, { $set: { isUnverified: true } });
+                console.log('[PaidOrder] Patched isUnverified=true on existing order', { orderId: existingOrder._id.toString() });
+            }
+
             const existingCommission = await Commission.findOne({ source: 'order', sourceId: existingOrder._id });
             if (!existingCommission) {
                 const txRecord = await Transaction.findOne({ orderId: existingOrder._id, status: 'Completed' });
@@ -713,7 +721,8 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
         balanceAfter: balanceBefore,
         status: 'Processing',
         transactionId: paymentTransaction.transactionId,
-        report: orderReport
+        report: orderReport,
+        isUnverified: Boolean(paymentTransaction.isUnverified || paymentTransaction.metadata?.isUnverified),
     });
     await order.save();
 
@@ -1993,7 +2002,31 @@ app.post('/api/admin/test-order', auth, admin, async (req, res) => {
 app.get('/api/admin/orders', auth, admin, async (req, res) => {
     try {
         const orders = await Order.find().populate('userId', 'username email').sort({ created: -1 });
-        res.json(orders);
+
+        // Backfill isUnverified from linked PaymentTransaction for orders
+        // that were created before the field was added to the Order schema.
+        const transactionIds = orders
+            .filter(o => !o.isUnverified && o.transactionId)
+            .map(o => o.transactionId);
+
+        let unverifiedTxSet = new Set();
+        if (transactionIds.length > 0) {
+            const txDocs = await PaymentTransaction.find(
+                { transactionId: { $in: transactionIds }, isUnverified: true },
+                { transactionId: 1 }
+            );
+            unverifiedTxSet = new Set(txDocs.map(t => t.transactionId));
+        }
+
+        const enriched = orders.map(o => {
+            const obj = o.toObject();
+            if (!obj.isUnverified && unverifiedTxSet.has(obj.transactionId)) {
+                obj.isUnverified = true;
+            }
+            return obj;
+        });
+
+        res.json(enriched);
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
