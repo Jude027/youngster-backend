@@ -4,6 +4,7 @@ const ProviderAPILog = require('./models/ProviderAPILog');
 const UniversalAPIHandler = require('./services/UniversalAPIHandler');
 const ClientType = require('./models/ClientType');
 const RolePriceMapping = require('./models/RolePriceMapping');
+const MtnVerification = require('./models/MtnVerification');
 const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
@@ -3718,6 +3719,87 @@ app.get('/api/cron/update-order-status', async (req, res) => {
     } catch (err) {
         console.error('[Cron] Order status update error:', err.message);
         res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// ==================== MTN VERIFICATION SUBMISSIONS ====================
+
+// Dealer submits phone numbers for MTN verification
+app.post('/api/mtn-verification', async (req, res) => {
+    try {
+        const { numbers, note, storeSlug } = req.body;
+
+        if (!numbers || !Array.isArray(numbers) && typeof numbers !== 'string') {
+            return res.status(400).json({ success: false, message: 'numbers is required' });
+        }
+
+        // Accept either an array or a newline-separated string
+        const rawList = Array.isArray(numbers) ? numbers : String(numbers).split(/[\n,]+/);
+        const cleaned = rawList
+            .map(n => n.replace(/[^0-9+]/g, '').trim())
+            .filter(n => n.length >= 9);
+
+        if (cleaned.length === 0) {
+            return res.status(400).json({ success: false, message: 'No valid phone numbers found' });
+        }
+
+        // Resolve dealer identity from token (optional — guests can also submit)
+        let userId = null;
+        let username = '';
+        let resolvedSlug = storeSlug || '';
+        try {
+            const authHeader = req.headers.authorization || '';
+            const token = authHeader.replace('Bearer ', '');
+            if (token) {
+                const jwt = require('jsonwebtoken');
+                const decoded = jwt.verify(token, process.env.JWT_SECRET);
+                userId = decoded.id || decoded._id || null;
+                if (userId) {
+                    const User = require('./models/User');
+                    const user = await User.findById(userId).select('username storeSlug').lean();
+                    if (user) {
+                        username = user.username || '';
+                        resolvedSlug = resolvedSlug || user.storeSlug || '';
+                    }
+                }
+            }
+        } catch (_) { /* token optional */ }
+
+        const submission = new MtnVerification({
+            userId,
+            storeSlug: resolvedSlug || null,
+            username,
+            numbers: cleaned,
+            note: String(note || '').trim(),
+        });
+        await submission.save();
+
+        res.json({ success: true, message: `${cleaned.length} number(s) submitted successfully.`, count: cleaned.length });
+    } catch (err) {
+        console.error('[MtnVerification] Submit error:', err.message);
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+// Admin: get all MTN verification submissions
+app.get('/api/admin/mtn-verifications', auth, admin, async (req, res) => {
+    try {
+        const submissions = await MtnVerification.find()
+            .sort({ submitted: -1 })
+            .lean();
+        res.json(submissions);
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+});
+
+// Admin: delete a submission
+app.delete('/api/admin/mtn-verifications/:id', auth, admin, async (req, res) => {
+    try {
+        await MtnVerification.findByIdAndDelete(req.params.id);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ message: err.message });
     }
 });
 
