@@ -49,6 +49,10 @@ const orderSchema = new mongoose.Schema({
     providerOrderId: String,
     lastStatusUpdate: Date,
     transactionId: { type: String, index: true, sparse: true },
+
+    // True when the beneficiary number failed the DataHub verification check.
+    // These orders are left pending and must be fulfilled manually by the admin.
+    isUnverified: { type: Boolean, default: false },
 });
 
 module.exports = mongoose.model('Order', orderSchema);
