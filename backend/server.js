@@ -930,7 +930,9 @@ async function submitOrderToProvider(order, orderData) {
         const providerMessage = result.actionRequired === 'TOP_UP_IGET_WALLET'
             ? `Action required: ${result.message}`
             : `Provider submission failed: ${result.message}`;
-        order.report = [order.report, providerMessage].filter(Boolean).join(' | ');
+        // Store provider errors in a dedicated field — never overwrite the
+        // submission details in order.report (used to display customer data).
+        order.providerError = providerMessage;
         if (result.actionRequired === 'TOP_UP_IGET_WALLET') {
             order.status = 'Processing';
         }
