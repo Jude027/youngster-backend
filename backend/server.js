@@ -689,10 +689,12 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
         || paymentTransaction.metadata?.packageProvider
         || paymentTransaction.provider;
 
-    // For MTN AFA registrations, embed the customer details in the report
+    // For MTN AFA and Special Posting, embed the customer details in the report
     // so they're visible in the order table.
-    const isAFA = /mtn.?afa/i.test(resolvedProvider || '');
+    const isAFA            = /mtn.?afa/i.test(resolvedProvider || '');
+    const isSpecialPosting = /special.?posting/i.test(resolvedProvider || '');
     const extra = paymentTransaction.metadata?.extra || {};
+
     const orderReport = isAFA && extra.fullname
         ? [
             `Name: ${extra.fullname}`,
@@ -700,6 +702,15 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
             `Ghana Card: ${extra.ghanaCard || '—'}`,
             `DOB: ${extra.dob || '—'}`,
             `Location: ${extra.location || '—'}`,
+            `Region: ${extra.region || '—'}`,
+          ].join(' | ')
+        : isSpecialPosting && extra.fullname
+        ? [
+            `Name: ${extra.fullname}`,
+            `Phone: ${resolvedBeneficiary}`,
+            `NSS Number: ${extra.nssNumber || '—'}`,
+            `Place of Posting: ${extra.placeOfPosting || '—'}`,
+            `District: ${extra.district || '—'}`,
             `Region: ${extra.region || '—'}`,
           ].join(' | ')
         : `Payment via ${gatewayName} - Transaction: ${paymentTransaction.transactionId}`;
