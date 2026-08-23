@@ -53,7 +53,9 @@ app.use(cors({
             'https://youngster-frontend-production.up.railway.app',
             'https://youngster-frontend.vercel.app',
             'https://youngster-backend.vercel.app',
-            'https://xpresportal.app'
+            'https://xpresportal.app',
+            'https://jdyoungsterent.com',
+            'https://www.jdyoungsterent.com',
         ];
 
         const isAllowed =
