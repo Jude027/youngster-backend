@@ -160,7 +160,11 @@ async function findStoreSettingsByStoreSlug(storeSlug) {
 async function resolvePaymentUserId(paymentData) {
     const storeSlug = paymentData.storeSlug || paymentData.metadata?.storeSlug;
     if (storeSlug) {
-        const storeSettingsList = await StoreSettings.find({ storeSlug }).sort({ updatedAt: -1, _id: -1 }).lean();
+        // Search both current storeSlug AND previousSlugs so old referral links still work
+        const storeSettingsList = await StoreSettings.find({
+            $or: [{ storeSlug }, { previousSlugs: storeSlug }]
+        }).sort({ updatedAt: -1, _id: -1 }).lean();
+
         if (storeSettingsList.length) {
             if (paymentData.userId) {
                 const matched = storeSettingsList.find(s => s.userId?.toString() === String(paymentData.userId));
@@ -354,7 +358,10 @@ async function recordOrderCommission({ userId, order, paymentTransaction, transa
     const clientPaid = Number(paymentTransaction?.amount ?? order?.amount ?? transactionRecord?.amount ?? 0);
     if (!Number.isFinite(clientPaid) || clientPaid <= 0) return null;
 
-    const provider = paymentTransaction?.provider || order?.providerName || order?.package;
+    const provider = paymentTransaction?.metadata?.orderProvider
+        || paymentTransaction?.metadata?.packageProvider
+        || paymentTransaction?.provider
+        || order?.providerName || order?.package;
     const packageName = resolvePaymentPackageName(paymentTransaction || {}) || order?.packageName || order?.bundleSize || order?.bundle_size;
     const clientType = paymentTransaction?.clientType || paymentTransaction?.metadata?.clientType || order?.clientType;
     const storeSlug = paymentTransaction?.storeSlug || order?.storeSlug || null;
@@ -669,18 +676,29 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
     }
 
     const userId = await resolvePaymentUserId(paymentTransaction);
+    const storeSlugFallback = paymentTransaction.storeSlug || paymentTransaction.metadata?.storeSlug || null;
+
     if (!userId) {
-        console.warn('[PaidOrder] Could not resolve user/store for paid transaction', {
+        // If we have a storeSlug we can still create the order — it will be
+        // visible to the dealer via the storeSlug query on GET /api/orders.
+        // Only give up completely if there's no storeSlug either.
+        if (!storeSlugFallback) {
+            console.warn('[PaidOrder] Could not resolve user/store for paid transaction — no storeSlug either, giving up', {
+                transactionId: paymentTransaction.transactionId,
+            });
+            return null;
+        }
+        console.warn('[PaidOrder] userId null but storeSlug present — order will be saved under storeSlug', {
             transactionId: paymentTransaction.transactionId,
-            storeSlug: paymentTransaction.storeSlug || paymentTransaction.metadata?.storeSlug || null
+            storeSlug: storeSlugFallback
         });
-        return null;
     }
 
-    const user = await User.findById(userId);
-    if (!user) return null;
+    const user = userId ? await User.findById(userId) : null;
+    // If userId resolved but user is not found, still proceed with storeSlug if available
+    if (userId && !user && !storeSlugFallback) return null;
 
-    const balanceBefore = user.balance || 0;
+    const balanceBefore = user?.balance || 0;
     const resolvedPackageName = resolvePaymentPackageName(paymentTransaction);
     const storeSlug = paymentTransaction.storeSlug || paymentTransaction.metadata?.storeSlug || null;
     const clientType = paymentTransaction.clientType || paymentTransaction.metadata?.clientType || 'Customers';
