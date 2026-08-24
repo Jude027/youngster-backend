@@ -1,7 +1,7 @@
 const mongoose = require('mongoose');
 const withdrawalSchema = new mongoose.Schema({
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-    amount: { type: Number, required: true, min: 50, max: 5000 },
+    amount: { type: Number, required: true, min: 30, max: 5000 },
     provider: { type: String, enum: ['mtn', 'telecel', 'airteltigo'], required: true },
     phoneNumber: String,
     accountName: String,
