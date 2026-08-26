@@ -1831,9 +1831,51 @@ if (fs_sync.existsSync(ADMIN_DIR)) {
 
 const FRONTEND_BASE = process.env.FRONTEND_URL || 'https://youngster-frontend.vercel.app';
 
-app.get('/referral/:slug', (req, res) => {
+app.get('/referral/:slug', async (req, res) => {
+    const slug   = req.params.slug;
     const client = req.query.client ? `&client=${encodeURIComponent(req.query.client)}` : '';
-    return res.redirect(302, `${FRONTEND_BASE}/Dashboard/dashboard2.html?store=${encodeURIComponent(req.params.slug)}${client}`);
+    const destUrl = `${FRONTEND_BASE}/Dashboard/dashboard2.html?store=${encodeURIComponent(slug)}${client}`;
+
+    // Fetch the dealer's store name so we can inject it into OG meta tags.
+    // WhatsApp/social media bots read these tags before any redirect fires.
+    let storeName = 'Data Shop';
+    let storeDesc = 'Buy affordable data bundles here.';
+    let storeLogo = '';
+    try {
+        const store = await StoreSettings.findOne({
+            $or: [{ storeSlug: slug.toLowerCase() }, { previousSlugs: slug.toLowerCase() }]
+        }).lean();
+        if (store) {
+            storeName = store.storeName || storeName;
+            storeDesc = store.storeDescription || storeDesc;
+            storeLogo = store.storeLogo || '';
+        }
+    } catch (_) { /* non-fatal — fall back to defaults */ }
+
+    // Serve a minimal HTML page with correct OG tags so WhatsApp previews
+    // show the dealer's store name, then immediately redirect the browser.
+    const logoTag  = storeLogo ? `<meta property="og:image" content="${storeLogo}">` : '';
+    const escaped  = (s) => String(s || '').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store');
+    res.send(`<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>${escaped(storeName)}</title>
+  <meta property="og:title"       content="${escaped(storeName)}">
+  <meta property="og:description" content="${escaped(storeDesc)}">
+  <meta property="og:type"        content="website">
+  <meta property="og:url"         content="${escaped(destUrl)}">
+  ${logoTag}
+  <meta name="twitter:card"  content="summary">
+  <meta name="twitter:title" content="${escaped(storeName)}">
+  <meta http-equiv="refresh" content="0;url=${escaped(destUrl)}">
+  <script>window.location.replace(${JSON.stringify(destUrl)});</script>
+</head>
+<body></body>
+</html>`);
 });
 
 // Redirect old ?store= URLs to clean /referral/ URLs
