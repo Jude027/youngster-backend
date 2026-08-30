@@ -850,6 +850,15 @@ async function submitOrderToProvider(order, orderData) {
         const provider = await Provider.findOne({ name: providerName });
         let routing = provider?.orderRouting?.handler || 'auto';
 
+        // Block orders if the provider has been disabled by the admin
+        if (provider?.disabled) {
+            return {
+                success: false,
+                message: `${providerName} is currently unavailable. Please try again later or contact support.`,
+                actionRequired: 'PROVIDER_DISABLED'
+            };
+        }
+
         // Unverified numbers (failed beneficiary check) — skip all automated
         // routing and leave the order as pending for manual fulfilment.
         if (orderData.isUnverified) {
@@ -2367,7 +2376,7 @@ app.delete('/api/admin/role-price-mapping/:role', auth, admin, async (req, res) 
 // GET /api/storefront-providers?store=<slug>
 app.get('/api/storefront-providers', async (req, res) => {
     try {
-        const providers = await Provider.find().sort({ order: 1 }).lean();
+        const providers = await Provider.find({ disabled: { $ne: true } }).sort({ order: 1 }).lean();
 
         // Attach storefrontSection from BasePrice displayConfig for each provider
         const basePriceRows = await BasePrice.find(
@@ -2438,6 +2447,24 @@ app.delete('/api/admin/providers/:name', auth, admin, async (req, res) => {
         await Provider.deleteOne({ name });
         await BasePrice.deleteMany({ provider: name });
         res.json({ message: 'Provider deleted' });
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+});
+
+// Toggle provider disabled/enabled
+app.put('/api/admin/providers/:name/toggle', auth, admin, async (req, res) => {
+    try {
+        const provider = await Provider.findOne({ name: req.params.name });
+        if (!provider) return res.status(404).json({ message: 'Provider not found' });
+        provider.disabled = !provider.disabled;
+        provider.updatedAt = new Date();
+        await provider.save();
+        res.json({
+            message: `Provider "${provider.name}" ${provider.disabled ? 'disabled' : 'enabled'} successfully`,
+            disabled: provider.disabled,
+            name: provider.name
+        });
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
