@@ -2376,6 +2376,13 @@ app.delete('/api/admin/role-price-mapping/:role', auth, admin, async (req, res) 
 // GET /api/storefront-providers?store=<slug>
 app.get('/api/storefront-providers', async (req, res) => {
     try {
+        // Ensure all known providers exist in DB (creates them if missing)
+        const hardcoded = ['MTN', 'MTN EXPRESS', 'Telecel', 'AT Ishare', 'AT Bigtime', 'MTN AFA'];
+        for (const name of hardcoded) {
+            const exists = await Provider.findOne({ name });
+            if (!exists) await Provider.create({ name, disabled: false });
+        }
+
         const providers = await Provider.find({ disabled: { $ne: true } }).sort({ order: 1 }).lean();
 
         // Attach storefrontSection from BasePrice displayConfig for each provider
