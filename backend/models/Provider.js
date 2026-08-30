@@ -46,6 +46,8 @@ const providerSchema = new mongoose.Schema({
     }],
 
     order: { type: Number, default: 999 },
+    disabled: { type: Boolean, default: false },  // when true, hidden from storefront and orders blocked
+
 
     orderRouting: {
         handler:       { type: String, default: '' },
