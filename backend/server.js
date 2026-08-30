@@ -1831,51 +1831,9 @@ if (fs_sync.existsSync(ADMIN_DIR)) {
 
 const FRONTEND_BASE = process.env.FRONTEND_URL || 'https://youngster-frontend.vercel.app';
 
-app.get('/referral/:slug', async (req, res) => {
-    const slug   = req.params.slug;
+app.get('/referral/:slug', (req, res) => {
     const client = req.query.client ? `&client=${encodeURIComponent(req.query.client)}` : '';
-    const destUrl = `${FRONTEND_BASE}/Dashboard/dashboard2.html?store=${encodeURIComponent(slug)}${client}`;
-
-    // Fetch the dealer's store name so we can inject it into OG meta tags.
-    // WhatsApp/social media bots read these tags before any redirect fires.
-    let storeName = 'Data Shop';
-    let storeDesc = 'Buy affordable data bundles here.';
-    let storeLogo = '';
-    try {
-        const store = await StoreSettings.findOne({
-            $or: [{ storeSlug: slug.toLowerCase() }, { previousSlugs: slug.toLowerCase() }]
-        }).lean();
-        if (store) {
-            storeName = store.storeName || storeName;
-            storeDesc = store.storeDescription || storeDesc;
-            storeLogo = store.storeLogo || '';
-        }
-    } catch (_) { /* non-fatal — fall back to defaults */ }
-
-    // Serve a minimal HTML page with correct OG tags so WhatsApp previews
-    // show the dealer's store name, then immediately redirect the browser.
-    const logoTag  = storeLogo ? `<meta property="og:image" content="${storeLogo}">` : '';
-    const escaped  = (s) => String(s || '').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-
-    res.setHeader('Content-Type', 'text/html; charset=utf-8');
-    res.setHeader('Cache-Control', 'no-store');
-    res.send(`<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="UTF-8">
-  <title>${escaped(storeName)}</title>
-  <meta property="og:title"       content="${escaped(storeName)}">
-  <meta property="og:description" content="${escaped(storeDesc)}">
-  <meta property="og:type"        content="website">
-  <meta property="og:url"         content="${escaped(destUrl)}">
-  ${logoTag}
-  <meta name="twitter:card"  content="summary">
-  <meta name="twitter:title" content="${escaped(storeName)}">
-  <meta http-equiv="refresh" content="0;url=${escaped(destUrl)}">
-  <script>window.location.replace(${JSON.stringify(destUrl)});</script>
-</head>
-<body></body>
-</html>`);
+    return res.redirect(302, `${FRONTEND_BASE}/Dashboard/dashboard2.html?store=${encodeURIComponent(req.params.slug)}${client}`);
 });
 
 // Redirect old ?store= URLs to clean /referral/ URLs
@@ -3585,10 +3543,10 @@ app.get('/api/user/payment-history', auth, async (req, res) => {
 // Get user's orders
 app.get('/api/user/orders', auth, async (req, res) => {
     try {
-        const storeSettings = await StoreSettings.findOne({ userId: req.user.id }).lean();
-        const storeSlug = storeSettings?.storeSlug;
-        const query = storeSlug
-            ? { $or: [{ userId: req.user.id }, { storeSlug }] }
+        const allStoreSettings = await StoreSettings.find({ userId: req.user.id }).lean();
+        const storeSlugs = allStoreSettings.map(s => s.storeSlug).filter(Boolean);
+        const query = storeSlugs.length
+            ? { $or: [{ userId: req.user.id }, { storeSlug: { $in: storeSlugs } }] }
             : { userId: req.user.id };
 
         const orders = await Order.find(query)
@@ -3604,7 +3562,13 @@ app.get('/api/user/orders', auth, async (req, res) => {
 // Get user's transactions
 app.get('/api/user/transactions', auth, async (req, res) => {
     try {
-        const transactions = await Transaction.find({ userId: req.user.id })
+        const allStoreSettings = await StoreSettings.find({ userId: req.user.id }).lean();
+        const storeSlugs = allStoreSettings.map(s => s.storeSlug).filter(Boolean);
+        const query = storeSlugs.length
+            ? { $or: [{ userId: req.user.id }, { storeSlug: { $in: storeSlugs } }] }
+            : { userId: req.user.id };
+
+        const transactions = await Transaction.find(query)
             .sort({ created: -1 })
             .limit(50);
 
@@ -3773,12 +3737,92 @@ async function handleXpresPortalWebhook(req, res) {
 app.post('/api/webhooks/xpresportal', handleXpresPortalWebhook);
 app.get('/api/webhooks/xpresportal', handleXpresPortalWebhook);
 
-// ==================== VERCEL CRON: ORDER STATUS UPDATER ====================
+// ==================== PAYMENT RECONCILIATION ====================
+// Scans all successful PaymentTransactions with no linked order and creates
+// the missing order + transaction records. Run this when a customer reports
+// money was deducted but no bundle was received.
+// GET  /api/admin/reconcile-payments          — dry run (shows what would be fixed)
+// POST /api/admin/reconcile-payments          — actually fixes the records
+app.get('/api/admin/reconcile-payments', auth, admin, async (req, res) => {
+    try {
+        const orphaned = await PaymentTransaction.find({
+            status: 'success',
+            $or: [{ orderId: null }, { orderId: { $exists: false } }]
+        }).sort({ initiatedAt: -1 }).limit(100).lean();
+
+        res.json({
+            message: `Found ${orphaned.length} successful payment(s) with no linked order.`,
+            count: orphaned.length,
+            transactions: orphaned.map(t => ({
+                transactionId: t.transactionId,
+                amount: t.amount,
+                provider: t.provider,
+                phoneNumber: t.phoneNumber,
+                storeSlug: t.storeSlug || t.metadata?.storeSlug,
+                initiatedAt: t.initiatedAt,
+                completedAt: t.completedAt,
+            }))
+        });
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+});
+
+app.post('/api/admin/reconcile-payments', auth, admin, async (req, res) => {
+    try {
+        const orphaned = await PaymentTransaction.find({
+            status: 'success',
+            $or: [{ orderId: null }, { orderId: { $exists: false } }]
+        }).sort({ initiatedAt: -1 }).limit(100);
+
+        let fixed = 0;
+        let skipped = 0;
+        const results = [];
+
+        for (const txn of orphaned) {
+            try {
+                // Double-check no order was created in the meantime
+                const existingOrder = await Order.findOne({ transactionId: txn.transactionId });
+                if (existingOrder) {
+                    // Link it back
+                    txn.orderId = existingOrder._id;
+                    await txn.save();
+                    skipped++;
+                    results.push({ transactionId: txn.transactionId, status: 'already_existed', orderId: existingOrder._id });
+                    continue;
+                }
+
+                // Create the missing order and transaction records
+                const orderId = await createPaidOrderRecords(txn, txn.paymentGateway);
+                if (orderId) {
+                    fixed++;
+                    results.push({ transactionId: txn.transactionId, status: 'fixed', orderId });
+                } else {
+                    results.push({ transactionId: txn.transactionId, status: 'failed', reason: 'Could not resolve store/user' });
+                }
+            } catch (err) {
+                results.push({ transactionId: txn.transactionId, status: 'error', reason: err.message });
+            }
+        }
+
+        res.json({
+            message: `Reconciliation complete. Fixed: ${fixed}, Already existed: ${skipped}, Failed: ${results.filter(r => r.status === 'failed' || r.status === 'error').length}`,
+            fixed, skipped, results
+        });
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+});
+
+// Also wire the reconciliation into the daily cron so it runs automatically
+// The cron endpoint at /api/cron/update-order-status already handles status updates.
+// Add reconciliation there too:
+
+
 // Called by Vercel Cron every 10 minutes to check pending/processing orders.
 // Secured with CRON_SECRET env var — set the same value in Vercel project settings.
 // Vercel cron config is in vercel.json.
 app.get('/api/cron/update-order-status', async (req, res) => {
-    // Verify the request is from Vercel Cron (or allow local dev without secret)
     const secret = process.env.CRON_SECRET;
     if (secret) {
         const authHeader = req.headers['authorization'];
@@ -3790,9 +3834,35 @@ app.get('/api/cron/update-order-status', async (req, res) => {
     try {
         const { checkPendingOrders } = require('./order-status-updater');
         await checkPendingOrders();
-        res.json({ success: true, message: 'Order status check completed', timestamp: new Date().toISOString() });
+
+        // Auto-reconcile orphaned successful payments (money deducted but no order)
+        const orphaned = await PaymentTransaction.find({
+            status: 'success',
+            $or: [{ orderId: null }, { orderId: { $exists: false } }]
+        }).sort({ initiatedAt: -1 }).limit(50);
+
+        let reconciled = 0;
+        for (const txn of orphaned) {
+            try {
+                const existing = await Order.findOne({ transactionId: txn.transactionId });
+                if (existing) {
+                    txn.orderId = existing._id;
+                    await txn.save();
+                } else {
+                    const orderId = await createPaidOrderRecords(txn, txn.paymentGateway);
+                    if (orderId) reconciled++;
+                }
+            } catch (_) {}
+        }
+
+        res.json({
+            success: true,
+            message: 'Order status check and reconciliation completed',
+            reconciled,
+            timestamp: new Date().toISOString()
+        });
     } catch (err) {
-        console.error('[Cron] Order status update error:', err.message);
+        console.error('[Cron] Error:', err.message);
         res.status(500).json({ success: false, error: err.message });
     }
 });
