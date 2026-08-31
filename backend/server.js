@@ -1683,8 +1683,8 @@ app.get('/api/referral-metrics', auth, async (req, res) => {
             totalReferrals:      sessionMap.size,
             activeReferrals:     active.length,
             inactiveReferrals:   inactive.length,
-            activeReferralsList:   active.sort(sortByRecent).slice(0, 10).map(formatItem),
-            inactiveReferralsList: inactive.sort(sortByRecent).slice(0, 10).map(formatItem),
+            activeReferralsList:   active.sort(sortByRecent).map(formatItem),
+            inactiveReferralsList: inactive.sort(sortByRecent).map(formatItem),
         });
     } catch (err) {
         console.error('[ReferralMetrics] Error', err);
