@@ -6,11 +6,19 @@ const Provider = require('../models/Provider');
 const ProviderAPILog = require('../models/ProviderAPILog');
 
 function getActiveApiConfig(provider) {
-    // Always use the primary apiConfig — unverified numbers are routed to
-    // WhatsApp Notifier in submitOrderToProvider, not to a secondary API config.
     const configs = Array.isArray(provider.apiConfigs) ? provider.apiConfigs : [];
+
+    // First try: find an enabled config that is NOT flagged for unverified numbers only
     const standardConfig = configs.find(c => c && c.enabled && !c.forUnverifiedNumbers);
     if (standardConfig) return standardConfig;
+
+    // Second try: find ANY enabled config (including forUnverifiedNumbers ones)
+    // This handles cases where the only saved config has forUnverifiedNumbers set
+    // accidentally, or the provider only has one config entry
+    const anyEnabled = configs.find(c => c && c.enabled);
+    if (anyEnabled) return anyEnabled;
+
+    // Fall back to the legacy single apiConfig field
     return provider.apiConfig?.enabled ? provider.apiConfig : null;
 }
 
@@ -398,7 +406,7 @@ class UniversalAPIHandler {
             payload.type = payload.type || 'single';
             payload.webhookUrl = payload.webhookUrl
                 || process.env.XPRES_WEBHOOK_URL
-                || 'https://youngster-backend-production.up.railway.app/api/webhooks/xpresportal';
+                || `${process.env.BACKEND_URL || 'https://youngster-backend.vercel.app'}/api/webhooks/xpresportal`;
             if (payload.msisdn && !payload.phone) { payload.phone = payload.msisdn; delete payload.msisdn; }
             if (payload.recipient && !payload.phone) { payload.phone = payload.recipient; delete payload.recipient; }
             if (payload.capacity !== undefined && payload.volume === undefined) {
@@ -437,8 +445,8 @@ class UniversalAPIHandler {
             'Accept': 'application/json',
             // Some APIs (XpresPortal, DataHub) restrict keys by domain and reject
             // requests without an Origin header from backend servers.
-            'Origin': process.env.BACKEND_ORIGIN || 'https://youngster-backend-production.up.railway.app',
-            'Referer': process.env.BACKEND_ORIGIN || 'https://youngster-backend-production.up.railway.app',
+            'Origin': process.env.BACKEND_ORIGIN || 'https://youngster-backend.vercel.app',
+            'Referer': process.env.BACKEND_ORIGIN || 'https://youngster-backend.vercel.app',
         };
         const authMethod = String(config.authMethod || config.type || '').toLowerCase();
 
@@ -777,4 +785,4 @@ class UniversalAPIHandler {
 }
 
 module.exports = UniversalAPIHandler;
-
+    
