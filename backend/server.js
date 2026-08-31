@@ -239,6 +239,15 @@ function buildPackageNamePatterns(packageName = '') {
         patterns.push(new RegExp(`^\\s*${numericMatch[1]}\\s*(?:gb|g|mb)?\\s*$`, 'i'));
     }
 
+    // Also match by leading numeric part for descriptive names like "1GB + FREE DATA BONUS"
+    // so commission lookup finds "1GB" in BasePrice/ReferralPrice
+    const leadingNumeric = normalized.match(/^(\d+(?:\.\d+)?)\s*(?:gb|g|mb)?/);
+    if (leadingNumeric && !numericMatch) {
+        // Only add this fallback when the full name has extra text beyond the size
+        patterns.push(new RegExp(`^\\s*${leadingNumeric[1]}\\s*(?:gb|g|mb)?\\s*$`, 'i'));
+        patterns.push(new RegExp(`^\\s*${leadingNumeric[1]}\\s*(?:gb|g|mb)?\\s*(?:\\+|\\-|\\s).*$`, 'i'));
+    }
+
     return patterns;
 }
 
@@ -1840,9 +1849,41 @@ if (fs_sync.existsSync(ADMIN_DIR)) {
 
 const FRONTEND_BASE = process.env.FRONTEND_URL || 'https://youngster-frontend.vercel.app';
 
-app.get('/referral/:slug', (req, res) => {
+app.get('/referral/:slug', async (req, res) => {
+    const { slug } = req.params;
     const client = req.query.client ? `&client=${encodeURIComponent(req.query.client)}` : '';
-    return res.redirect(302, `${FRONTEND_BASE}/Dashboard/dashboard2.html?store=${encodeURIComponent(req.params.slug)}${client}`);
+    const redirectUrl = `${FRONTEND_BASE}/Dashboard/dashboard2.html?store=${encodeURIComponent(slug)}${client}`;
+
+    // Serve a dynamic HTML page with correct OG tags for WhatsApp/social previews
+    // The browser is redirected instantly via JS — user experience is unchanged
+    try {
+        const store = await StoreSettings.findOne({
+            $or: [{ storeSlug: slug }, { previousSlugs: slug }]
+        });
+        const storeName = store?.storeName || 'Youngster Data Shop';
+        const storeDesc = store?.storeDescription || 'Get your data bundles here.';
+        const storeLogo = store?.storeLogo || '';
+
+        return res.send(`<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>${storeName}</title>
+  <meta property="og:title" content="${storeName}" />
+  <meta property="og:description" content="${storeDesc}" />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://youngster-backend.vercel.app/referral/${encodeURIComponent(slug)}" />
+  ${storeLogo ? `<meta property="og:image" content="${storeLogo}" />` : ''}
+  <meta name="twitter:card" content="summary" />
+  <meta name="twitter:title" content="${storeName}" />
+  <meta http-equiv="refresh" content="0;url=${redirectUrl}" />
+  <script>window.location.replace(${JSON.stringify(redirectUrl)});</script>
+</head>
+<body><p>Redirecting to <a href="${redirectUrl}">${storeName}</a>...</p></body>
+</html>`);
+    } catch (_) {
+        return res.redirect(302, redirectUrl);
+    }
 });
 
 // Redirect old ?store= URLs to clean /referral/ URLs
