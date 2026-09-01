@@ -8,18 +8,21 @@ const ProviderAPILog = require('../models/ProviderAPILog');
 function getActiveApiConfig(provider) {
     const configs = Array.isArray(provider.apiConfigs) ? provider.apiConfigs : [];
 
-    // First try: find an enabled config that is NOT flagged for unverified numbers only
+    // Primary: find an enabled config that is NOT flagged for unverified-only use
     const standardConfig = configs.find(c => c && c.enabled && !c.forUnverifiedNumbers);
     if (standardConfig) return standardConfig;
 
-    // Second try: find ANY enabled config (including forUnverifiedNumbers ones)
-    // This handles cases where the only saved config has forUnverifiedNumbers set
-    // accidentally, or the provider only has one config entry
-    const anyEnabled = configs.find(c => c && c.enabled);
-    if (anyEnabled) return anyEnabled;
+    // If ALL enabled configs are flagged forUnverifiedNumbers (admin misconfiguration),
+    // use the first enabled one anyway so the provider doesn't silently fail
+    if (configs.length > 0) {
+        const anyEnabled = configs.find(c => c && c.enabled);
+        if (anyEnabled) return anyEnabled;
+    }
 
     // Fall back to the legacy single apiConfig field
-    return provider.apiConfig?.enabled ? provider.apiConfig : null;
+    if (provider.apiConfig?.enabled) return provider.apiConfig;
+
+    return null;
 }
 
 /**
@@ -735,6 +738,19 @@ class UniversalAPIHandler {
             });
 
             const isXpresPortal = String(config.baseUrl || '').toLowerCase().includes('xpresportal');
+
+            // AT Ishare / AT Bigtime (XpresPortal order-only endpoints) don't have
+            // a dedicated balance endpoint — return a friendly message instead of
+            // hitting an invalid URL and getting "Invalid request method".
+            if (isXpresPortal && (!config.balanceEndpoint || config.balanceEndpoint.includes('order'))) {
+                return {
+                    success: true,
+                    message: 'Balance check not available for this XpresPortal provider. Orders are working if configured correctly.',
+                    balance: null,
+                    currency: 'GHS'
+                };
+            }
+
             const method = isXpresPortal ? 'GET' : (config.balanceMethod && config.balanceMethod.toUpperCase() === 'POST' ? 'POST' : 'GET');
 
             const response = await fetch(url, {
@@ -785,4 +801,3 @@ class UniversalAPIHandler {
 }
 
 module.exports = UniversalAPIHandler;
-    
