@@ -8,16 +8,17 @@ const ProviderAPILog = require('../models/ProviderAPILog');
 function getActiveApiConfig(provider) {
     const configs = Array.isArray(provider.apiConfigs) ? provider.apiConfigs : [];
 
-    // Primary: find an enabled config that is NOT flagged for unverified-only use
-    const standardConfig = configs.find(c => c && c.enabled && !c.forUnverifiedNumbers);
-    if (standardConfig) return standardConfig;
+    // The PRIMARY config is always index 0 (the first one in the array).
+    // This is what the admin sees as "[Primary] Default" in the dropdown.
+    // It handles VERIFIED numbers — DataHub for MTN, XpresPortal for AT Ishare etc.
+    // Secondary configs (index 1, 2...) are for special routing only and are
+    // NOT used for standard order processing.
+    const primaryConfig = configs.find((c, i) => c && c.enabled && i === 0);
+    if (primaryConfig) return primaryConfig;
 
-    // If ALL enabled configs are flagged forUnverifiedNumbers (admin misconfiguration),
-    // use the first enabled one anyway so the provider doesn't silently fail
-    if (configs.length > 0) {
-        const anyEnabled = configs.find(c => c && c.enabled);
-        if (anyEnabled) return anyEnabled;
-    }
+    // If index-0 is not enabled, try the first enabled config regardless of position
+    const firstEnabled = configs.find(c => c && c.enabled);
+    if (firstEnabled) return firstEnabled;
 
     // Fall back to the legacy single apiConfig field
     if (provider.apiConfig?.enabled) return provider.apiConfig;
