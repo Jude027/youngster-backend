@@ -205,11 +205,17 @@ async function resolvePaymentUserId(paymentData) {
 }
 
 function escapeRegex(value = '') {
-    return String(value).replace(/[.*+?^${}()|[\\]\\]/g, '\\\\$&');
+    // Properly escape all regex special characters
+    return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function exactTextPattern(value = '') {
-    return new RegExp(`^${escapeRegex(String(value).trim())}$`, 'i');
+    try {
+        return new RegExp(`^${escapeRegex(String(value).trim())}$`, 'i');
+    } catch (_) {
+        // Fallback to a literal string comparison pattern if regex fails
+        return new RegExp(`^${String(value).trim().replace(/[^a-zA-Z0-9\s]/g, '.')}$`, 'i');
+    }
 }
 
 function normalizePackageName(value = '') {
@@ -231,8 +237,16 @@ function buildPackageNamePatterns(packageName = '') {
         patterns.push(exactTextPattern(normalized));
     }
 
-    const whitespaceOptional = normalized.replace(/\s+/g, '\\s*').replace(/[.*+?^${}()|[\\]\\]/g, '\\\\$&');
-    patterns.push(new RegExp(`^${whitespaceOptional}$`, 'i'));
+    // Build whitespace-optional pattern — must escape regex special chars FIRST,
+    // then replace escaped-space sequences with \s*. The + in "1GB + FREE DATA BONUS"
+    // is a regex quantifier and must be escaped before building the pattern.
+    try {
+        const escapedNormalized = normalized.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const whitespaceOptional = escapedNormalized.replace(/\\ /g, '\\s*').replace(/\s+/g, '\\s*');
+        patterns.push(new RegExp(`^${whitespaceOptional}$`, 'i'));
+    } catch (_) {
+        // If regex construction fails (unusual chars), skip the whitespace-optional pattern
+    }
 
     const numericMatch = normalized.match(/^(\d+(?:\.\d+)?)(?:\s*(?:gb|g|mb))?$/);
     if (numericMatch) {
@@ -373,6 +387,17 @@ async function recordOrderCommission({ userId, order, paymentTransaction, transa
         || order?.providerName || order?.package;
     const packageName = resolvePaymentPackageName(paymentTransaction || {}) || order?.packageName || order?.bundleSize || order?.bundle_size;
     const clientType = paymentTransaction?.clientType || paymentTransaction?.metadata?.clientType || order?.clientType;
+
+    console.log('[Commission] resolving for', {
+        provider,
+        packageName,
+        clientType,
+        userId: userId?.toString(),
+        paymentTxnPackageName: paymentTransaction?.packageName,
+        metadataPackageName: paymentTransaction?.metadata?.packageName,
+        metadataBundleSize: paymentTransaction?.metadata?.bundle_size,
+        orderPackageName: order?.packageName,
+    });
     const storeSlug = paymentTransaction?.storeSlug || order?.storeSlug || null;
     const storeOwnerUserId = storeSlug ? await resolvePaymentUserId({ storeSlug }) : null;
 
@@ -2415,7 +2440,18 @@ app.delete('/api/admin/role-price-mapping/:role', auth, admin, async (req, res) 
 // ==================== PUBLIC STOREFRONT PROVIDERS ====================
 // No auth required — returns providers + their storefrontSection for guest dashboards.
 // GET /api/storefront-providers?store=<slug>
+// In-memory cache so repeated requests don't hit MongoDB on every page load.
+let _storefrontProvidersCache = null;
+let _storefrontProvidersCacheTime = 0;
+const STOREFRONT_PROVIDERS_CACHE_TTL = 30 * 1000; // 30 seconds
+
 app.get('/api/storefront-providers', async (req, res) => {
+    // Serve from cache if fresh
+    if (_storefrontProvidersCache && Date.now() - _storefrontProvidersCacheTime < STOREFRONT_PROVIDERS_CACHE_TTL) {
+        res.set('Cache-Control', 'public, max-age=30');
+        return res.json(_storefrontProvidersCache);
+    }
+
     try {
         // Ensure all known providers exist in DB (creates them if missing)
         const hardcoded = ['MTN', 'MTN EXPRESS', 'Telecel', 'AT Ishare', 'AT Bigtime', 'MTN AFA'];
@@ -2446,6 +2482,11 @@ app.get('/api/storefront-providers', async (req, res) => {
             storefrontSection: sectionMap[p.name] || 'data_bundle',
         }));
 
+        // Store in cache
+        _storefrontProvidersCache = result;
+        _storefrontProvidersCacheTime = Date.now();
+
+        res.set('Cache-Control', 'public, max-age=30');
         res.json(result);
     } catch (err) {
         res.status(500).json({ message: err.message });
@@ -2508,6 +2549,9 @@ app.put('/api/admin/providers/:name/toggle', auth, admin, async (req, res) => {
         provider.disabled = !provider.disabled;
         provider.updatedAt = new Date();
         await provider.save();
+        // Bust the in-memory cache so the next storefront request reflects the change
+        _storefrontProvidersCache = null;
+        _storefrontProvidersCacheTime = 0;
         res.json({
             message: `Provider "${provider.name}" ${provider.disabled ? 'disabled' : 'enabled'} successfully`,
             disabled: provider.disabled,
