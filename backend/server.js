@@ -388,16 +388,6 @@ async function recordOrderCommission({ userId, order, paymentTransaction, transa
     const packageName = resolvePaymentPackageName(paymentTransaction || {}) || order?.packageName || order?.bundleSize || order?.bundle_size;
     const clientType = paymentTransaction?.clientType || paymentTransaction?.metadata?.clientType || order?.clientType;
 
-    console.log('[Commission] resolving for', {
-        provider,
-        packageName,
-        clientType,
-        userId: userId?.toString(),
-        paymentTxnPackageName: paymentTransaction?.packageName,
-        metadataPackageName: paymentTransaction?.metadata?.packageName,
-        metadataBundleSize: paymentTransaction?.metadata?.bundle_size,
-        orderPackageName: order?.packageName,
-    });
     const storeSlug = paymentTransaction?.storeSlug || order?.storeSlug || null;
     const storeOwnerUserId = storeSlug ? await resolvePaymentUserId({ storeSlug }) : null;
 
