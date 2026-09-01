@@ -2483,6 +2483,26 @@ app.get('/api/storefront-providers', async (req, res) => {
     }
 });
 
+// One-time cleanup: keep only the first apiConfig entry for a provider
+// POST /api/admin/providers/:name/keep-primary-config
+app.post('/api/admin/providers/:name/keep-primary-config', auth, admin, async (req, res) => {
+    try {
+        const provider = await Provider.findOne({ name: req.params.name });
+        if (!provider) return res.status(404).json({ message: 'Provider not found' });
+        const configs = Array.isArray(provider.apiConfigs) ? provider.apiConfigs : [];
+        if (configs.length <= 1) {
+            return res.json({ message: 'Already has 1 or fewer configs — nothing to clean up', count: configs.length });
+        }
+        const removed = configs.length - 1;
+        provider.apiConfigs = [configs[0]]; // keep only index 0
+        provider.markModified('apiConfigs');
+        await provider.save();
+        res.json({ message: `Removed ${removed} extra config(s). Only the primary (index 0) config remains.`, remaining: provider.apiConfigs });
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+});
+
 // ==================== PROVIDERS ====================
 app.get('/api/providers', auth, async (req, res) => {
     try {
