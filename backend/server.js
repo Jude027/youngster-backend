@@ -56,6 +56,7 @@ app.use(cors({
             'https://xpresportal.app',
             'https://jdyoungsterent.com',
             'https://www.jdyoungsterent.com',
+            'https://youngsterentgh.pythonanywhere.com',
         ];
 
         const isAllowed =
