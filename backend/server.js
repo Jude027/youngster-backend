@@ -3293,7 +3293,86 @@ app.post('/api/payment/verify-beneficiary', async (req, res) => {
     }
 });
 
-// Resend OTP for an existing Moolre transaction.
+// ── DataHub Order Proxy ───────────────────────────────────────────────────────
+// PythonAnywhere cannot reach datahub.com.gh directly (blocked by proxy).
+// This endpoint lets the PythonAnywhere backend call Vercel, which then
+// forwards the order to DataHub and returns the result.
+// POST /api/proxy/datahub-order
+// Body: { phone, volume, apiKey (optional override) }
+app.post('/api/proxy/datahub-order', async (req, res) => {
+    try {
+        const { phone, volume } = req.body;
+
+        if (!phone || !volume) {
+            return res.status(400).json({ success: false, message: 'phone and volume are required' });
+        }
+
+        // Find the DataHub provider configuration
+        const provider = await Provider.findOne({
+            $or: [
+                { name: { $in: ['DataHub', 'datahub', 'MTN', 'mtn'] } },
+                { 'apiConfigs.baseUrl': /datahub/i }
+            ]
+        });
+
+        let activeApiConfig = null;
+        if (provider) {
+            const configs = Array.isArray(provider.apiConfigs) ? provider.apiConfigs : [];
+            activeApiConfig = configs.find(c => c && c.enabled && String(c.baseUrl || '').toLowerCase().includes('datahub'));
+            if (!activeApiConfig) {
+                activeApiConfig = configs.find(c => c && c.enabled && !c.forUnverifiedNumbers);
+            }
+        }
+
+        const apiKey = activeApiConfig?.authHeaderValue
+            || provider?.apiConfig?.authHeaderValue
+            || provider?.apiKey
+            || process.env.DATAHUB_API_KEY;
+
+        if (!apiKey) {
+            return res.status(500).json({ success: false, message: 'DataHub API key not configured' });
+        }
+
+        const baseUrl = activeApiConfig?.baseUrl
+            ? String(activeApiConfig.baseUrl).replace(/\/+$/, '')
+            : 'https://datahub.com.gh';
+
+        const orderUrl = baseUrl.includes('/api/external')
+            ? baseUrl + '/purchases/data-purchase'
+            : baseUrl + '/api/external/purchases/data-purchase';
+
+        console.log('[DataHubProxy] Placing order:', { phone, volume, orderUrl });
+
+        const response = await fetch(orderUrl, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-API-Key': apiKey
+            },
+            body: JSON.stringify({ phone, volume: parseInt(volume) })
+        });
+
+        const result = await response.json();
+
+        if (!response.ok || result?.success === false) {
+            console.log('[DataHubProxy] Order failed:', result);
+            return res.status(response.ok ? 422 : response.status).json({
+                success: false,
+                message: result?.message || result?.error || 'Order failed',
+                data: result
+            });
+        }
+
+        console.log('[DataHubProxy] Order successful:', result);
+        return res.json({ success: true, data: result });
+
+    } catch (err) {
+        console.error('[DataHubProxy] Request failed:', err.message);
+        res.status(500).json({ success: false, message: 'DataHub order service unavailable' });
+    }
+});
+
+
 // Re-calls the initiate endpoint (no otpcode) which makes Moolre fire a new SMS.
 app.post('/api/payment/resend-otp', async (req, res) => {
     try {
