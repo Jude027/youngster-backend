@@ -3242,7 +3242,7 @@ app.post('/api/payment/verify-beneficiary', async (req, res) => {
         // Base URL: use provider config or fall back to DataHub's root
         const baseUrl = activeApiConfig?.baseUrl
             ? String(activeApiConfig.baseUrl).replace(/\/+$/, '')
-            : 'https://datahub.com.gh';
+            : 'https://user.datahub.com/api/external';
 
         // Auto-construct the verify URL so no extra admin field is needed.
         // DataHub verify path: /api/external/purchases/verify-number
@@ -3335,7 +3335,7 @@ app.post('/api/proxy/datahub-order', async (req, res) => {
 
         const baseUrl = activeApiConfig?.baseUrl
             ? String(activeApiConfig.baseUrl).replace(/\/+$/, '')
-            : 'https://datahub.com.gh';
+            : 'https://user.datahub.com/api/external';
 
         const orderUrl = baseUrl.includes('/api/external')
             ? baseUrl + '/purchases/data-purchase'
