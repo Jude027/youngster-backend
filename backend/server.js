@@ -3338,8 +3338,8 @@ app.post('/api/proxy/datahub-order', async (req, res) => {
             : 'https://user.datahubgh.com/api/external';
 
         const orderUrl = baseUrl.includes('/api/external')
-            ? baseUrl + '/purchases/data-purchase'
-            : baseUrl + '/api/external/purchases/data-purchase';
+            ? baseUrl + '/data-purchase'
+            : baseUrl + '/api/external/data-purchase';
 
         console.log('[DataHubProxy] Placing order:', { phone, volume, orderUrl });
 
@@ -3352,7 +3352,21 @@ app.post('/api/proxy/datahub-order', async (req, res) => {
             body: JSON.stringify({ phone, volume: parseInt(volume) })
         });
 
-        const result = await response.json();
+        const text = await response.text();
+        console.log('[DataHubProxy] Raw response status:', response.status);
+        console.log('[DataHubProxy] Raw response body:', text.slice(0, 500));
+
+        let result;
+        try {
+            result = JSON.parse(text);
+        } catch (e) {
+            console.error('[DataHubProxy] Response is not JSON:', text.slice(0, 200));
+            return res.status(502).json({
+                success: false,
+                message: `DataHub returned non-JSON response (status ${response.status})`,
+                raw: text.slice(0, 200)
+            });
+        }
 
         if (!response.ok || result?.success === false) {
             console.log('[DataHubProxy] Order failed:', result);
