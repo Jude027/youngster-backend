@@ -3343,6 +3343,9 @@ app.post('/api/proxy/datahub-order', async (req, res) => {
 
         console.log('[DataHubProxy] Placing order:', { phone, volume, orderUrl });
 
+        const capacityGB = String(Math.round(parseInt(volume) / 1000));
+        console.log('[DataHubProxy] Request body:', { recipient: phone, capacity: capacityGB, networkKey: req.body.networkKey || 'YELLO' });
+
         const response = await fetch(orderUrl, {
             method: 'POST',
             headers: {
@@ -3351,7 +3354,7 @@ app.post('/api/proxy/datahub-order', async (req, res) => {
             },
             body: JSON.stringify({ 
                 recipient: phone,
-                capacity: String(Math.round(parseInt(volume) / 1000)),
+                capacity: capacityGB,
                 networkKey: req.body.networkKey || 'YELLO'
             })
         });
