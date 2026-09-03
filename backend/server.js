@@ -3351,7 +3351,7 @@ app.post('/api/proxy/datahub-order', async (req, res) => {
             },
             body: JSON.stringify({ 
                 recipient: phone,
-                volume: parseInt(volume),
+                capacity: String(Math.round(parseInt(volume) / 1000)),
                 networkKey: req.body.networkKey || 'YELLO'
             })
         });
