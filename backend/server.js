@@ -3349,7 +3349,11 @@ app.post('/api/proxy/datahub-order', async (req, res) => {
                 'Content-Type': 'application/json',
                 'X-API-Key': apiKey
             },
-            body: JSON.stringify({ phone, volume: parseInt(volume) })
+            body: JSON.stringify({ 
+                phone, 
+                volume: parseInt(volume),
+                networkKey: req.body.networkKey || 'YELLO'
+            })
         });
 
         const text = await response.text();
