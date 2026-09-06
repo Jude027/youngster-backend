@@ -2019,7 +2019,7 @@ app.post('/api/withdrawals', auth, async (req, res) => {
     try {
         const { amount, provider, phoneNumber, accountName } = req.body;
         const user = await User.findById(req.user.id);
-        if (amount < 50) return res.status(400).json({ message: 'Minimum withdrawal is GHS 50' });
+        if (amount < 30) return res.status(400).json({ message: 'Minimum withdrawal is GHS 30' });
         if (amount > 5000) return res.status(400).json({ message: 'Maximum withdrawal is GHS 5,000' });
         if (amount > (user.availableBalance || 0)) return res.status(400).json({ message: 'Insufficient balance' });
         const existing = await Withdrawal.findOne({ userId: req.user.id, status: 'pending' });
