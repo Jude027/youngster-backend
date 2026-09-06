@@ -2002,13 +2002,37 @@ app.put('/api/store-settings', auth, async (req, res) => {
 // ==================== BALANCE & WITHDRAWALS ====================
 app.get('/api/balance', auth, async (req, res) => {
     try {
-        const user = await User.findById(req.user.id);
-        const pendingWithdrawals = await Withdrawal.find({ userId: req.user.id, status: 'pending' });
-        const pendingAmount = pendingWithdrawals.reduce((sum, w) => sum + w.amount, 0);
+        const userId = new (require('mongoose').Types.ObjectId)(req.user.id);
+
+        // Always compute live balance from Commission records so it's never stale.
+        // Sum all 'available' commissions, then subtract all approved/paid withdrawals.
+        const [commResult, withdrawResult, pendingWithdrawals] = await Promise.all([
+            Commission.aggregate([
+                { $match: { userId, status: 'available' } },
+                { $group: { _id: null, total: { $sum: '$amount' } } }
+            ]),
+            Withdrawal.aggregate([
+                { $match: { userId, status: { $in: ['approved', 'paid', 'completed'] } } },
+                { $group: { _id: null, total: { $sum: '$amount' } } }
+            ]),
+            Withdrawal.find({ userId: req.user.id, status: 'pending' })
+        ]);
+
+        const totalCommissions = commResult[0]?.total || 0;
+        const totalWithdrawn   = withdrawResult[0]?.total || 0;
+        const liveBalance      = Math.max(0, parseFloat((totalCommissions - totalWithdrawn).toFixed(2)));
+        const pendingAmount    = pendingWithdrawals.reduce((s, w) => s + w.amount, 0);
+
+        // Sync the stored field so the withdrawal check is also accurate
+        await User.findByIdAndUpdate(req.user.id, {
+            availableBalance: liveBalance,
+            totalEarned: totalCommissions
+        });
+
         res.json({
-            availableBalance: user.availableBalance || 0,
+            availableBalance: liveBalance,
             pendingWithdrawals: pendingAmount,
-            totalEarned: user.totalEarned || 0
+            totalEarned: totalCommissions
         });
     } catch (err) {
         res.status(500).json({ message: err.message });
@@ -2018,12 +2042,40 @@ app.get('/api/balance', auth, async (req, res) => {
 app.post('/api/withdrawals', auth, async (req, res) => {
     try {
         const { amount, provider, phoneNumber, accountName } = req.body;
-        const user = await User.findById(req.user.id);
-        if (amount < 30) return res.status(400).json({ message: 'Minimum withdrawal is GHS 30' });
+
+        if (amount < 30)   return res.status(400).json({ message: 'Minimum withdrawal is GHS 30' });
         if (amount > 5000) return res.status(400).json({ message: 'Maximum withdrawal is GHS 5,000' });
-        if (amount > (user.availableBalance || 0)) return res.status(400).json({ message: 'Insufficient balance' });
+
+        const userId = new (require('mongoose').Types.ObjectId)(req.user.id);
+
+        // Compute live balance from commissions minus approved withdrawals
+        const [commResult, withdrawResult] = await Promise.all([
+            Commission.aggregate([
+                { $match: { userId, status: 'available' } },
+                { $group: { _id: null, total: { $sum: '$amount' } } }
+            ]),
+            Withdrawal.aggregate([
+                { $match: { userId, status: { $in: ['approved', 'paid', 'completed'] } } },
+                { $group: { _id: null, total: { $sum: '$amount' } } }
+            ])
+        ]);
+
+        const liveBalance = Math.max(0, parseFloat(
+            ((commResult[0]?.total || 0) - (withdrawResult[0]?.total || 0)).toFixed(2)
+        ));
+
+        // Sync stored field
+        await User.findByIdAndUpdate(req.user.id, { availableBalance: liveBalance });
+
+        if (amount > liveBalance) {
+            return res.status(400).json({
+                message: `Insufficient balance. Your available balance is GHS ${liveBalance.toFixed(2)}.`
+            });
+        }
+
         const existing = await Withdrawal.findOne({ userId: req.user.id, status: 'pending' });
         if (existing) return res.status(400).json({ message: 'You already have a pending withdrawal request' });
+
         const withdrawal = new Withdrawal({ userId: req.user.id, amount, provider, phoneNumber, accountName });
         await withdrawal.save();
         res.status(201).json({ message: 'Withdrawal request submitted successfully', withdrawalId: withdrawal._id });
