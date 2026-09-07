@@ -1904,6 +1904,58 @@ app.get('/referral/:slug', async (req, res) => {
     }
 });
 
+// ── Clean storefront route: GET /:slug/:clientType ───────────────────────────
+// Cleanest possible URL: jdyoungsterent.com/youngster-data-shop/Customers
+// Must be defined AFTER all other named routes to avoid shadowing them.
+app.get('/:slug/:clientType?', async (req, res) => {
+    const slug       = req.params.slug;
+    const clientType = req.params.clientType || req.query.client || 'Customers';
+    const destUrl    = `${FRONTEND_BASE}/Dashboard/dashboard2.html?store=${encodeURIComponent(slug)}&client=${encodeURIComponent(clientType)}`;
+
+    let storeName = 'Data Shop';
+    let storeDesc = 'Buy affordable data bundles here.';
+    let storeLogo = '';
+    try {
+        const store = await StoreSettings.findOne({
+            $or: [{ storeSlug: slug.toLowerCase() }, { previousSlugs: slug.toLowerCase() }]
+        }).lean();
+        if (store) {
+            storeName = store.storeName || storeName;
+            storeDesc = store.storeDescription || storeDesc;
+            storeLogo = store.storeLogo || '';
+        } else {
+            // Slug not found — not a valid store, skip
+            return res.status(404).send('Not found');
+        }
+    } catch (_) {
+        return res.status(404).send('Not found');
+    }
+
+    const logoTag = storeLogo ? `<meta property="og:image" content="${storeLogo}">` : '';
+    const esc = (s) => String(s || '').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store');
+    res.send(`<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>${esc(storeName)}</title>
+  <meta property="og:title"       content="${esc(storeName)}">
+  <meta property="og:description" content="${esc(storeDesc)}">
+  <meta property="og:type"        content="website">
+  <meta property="og:url"         content="${esc(destUrl)}">
+  ${logoTag}
+  <meta name="twitter:card"  content="summary">
+  <meta name="twitter:title" content="${esc(storeName)}">
+  <meta http-equiv="refresh" content="0;url=${esc(destUrl)}">
+  <script>window.location.replace(${JSON.stringify(destUrl)});</script>
+</head>
+<body></body>
+</html>`);
+});
+    const slug       = req.params.slug;
+    const clientType = req.params.clientType || req.query.client || 'Customers';
 // Redirect old ?store= URLs to clean /referral/ URLs
 app.get('/Dashboard/dashboard2', (req, res) => {
     const store = req.query.store;
@@ -2006,33 +2058,29 @@ app.get('/api/balance', auth, async (req, res) => {
     try {
         const userId = new (require('mongoose').Types.ObjectId)(req.user.id);
 
-        // Always compute live balance from Commission records so it's never stale.
-        // Sum all 'available' commissions, then subtract all approved/paid withdrawals.
-        const [commResult, withdrawResult, pendingWithdrawals] = await Promise.all([
+        // Compute live balance = total commissions earned minus total approved withdrawals.
+        // We do NOT also subtract via $inc because the withdrawal approval already did that.
+        // Use Commission sum as the total earned, and rely on stored availableBalance
+        // (which is kept accurate by $inc on withdrawal approval/rejection) as the balance.
+        // Only recalculate from scratch if the stored value looks wrong (negative or missing).
+        const [commResult, pendingWithdrawals, user] = await Promise.all([
             Commission.aggregate([
                 { $match: { userId, status: 'available' } },
                 { $group: { _id: null, total: { $sum: '$amount' } } }
             ]),
-            Withdrawal.aggregate([
-                { $match: { userId, status: { $in: ['approved', 'paid', 'completed'] } } },
-                { $group: { _id: null, total: { $sum: '$amount' } } }
-            ]),
-            Withdrawal.find({ userId: req.user.id, status: 'pending' })
+            Withdrawal.find({ userId: req.user.id, status: 'pending' }),
+            User.findById(req.user.id).select('availableBalance totalEarned')
         ]);
 
         const totalCommissions = commResult[0]?.total || 0;
-        const totalWithdrawn   = withdrawResult[0]?.total || 0;
-        const liveBalance      = Math.max(0, parseFloat((totalCommissions - totalWithdrawn).toFixed(2)));
+        const storedBalance    = user?.availableBalance || 0;
         const pendingAmount    = pendingWithdrawals.reduce((s, w) => s + w.amount, 0);
 
-        // Sync the stored field so the withdrawal check is also accurate
-        await User.findByIdAndUpdate(req.user.id, {
-            availableBalance: liveBalance,
-            totalEarned: totalCommissions
-        });
+        // Only sync totalEarned — don't touch availableBalance which is managed by $inc
+        await User.findByIdAndUpdate(req.user.id, { totalEarned: totalCommissions });
 
         res.json({
-            availableBalance: liveBalance,
+            availableBalance: parseFloat(storedBalance.toFixed(2)),
             pendingWithdrawals: pendingAmount,
             totalEarned: totalCommissions
         });
@@ -2048,30 +2096,13 @@ app.post('/api/withdrawals', auth, async (req, res) => {
         if (amount < 30)   return res.status(400).json({ message: 'Minimum withdrawal is GHS 30' });
         if (amount > 5000) return res.status(400).json({ message: 'Maximum withdrawal is GHS 5,000' });
 
-        const userId = new (require('mongoose').Types.ObjectId)(req.user.id);
+        // Use the stored availableBalance — it's kept accurate by $inc on approval/rejection
+        const user = await User.findById(req.user.id).select('availableBalance');
+        const storedBalance = user?.availableBalance || 0;
 
-        // Compute live balance from commissions minus approved withdrawals
-        const [commResult, withdrawResult] = await Promise.all([
-            Commission.aggregate([
-                { $match: { userId, status: 'available' } },
-                { $group: { _id: null, total: { $sum: '$amount' } } }
-            ]),
-            Withdrawal.aggregate([
-                { $match: { userId, status: { $in: ['approved', 'paid', 'completed'] } } },
-                { $group: { _id: null, total: { $sum: '$amount' } } }
-            ])
-        ]);
-
-        const liveBalance = Math.max(0, parseFloat(
-            ((commResult[0]?.total || 0) - (withdrawResult[0]?.total || 0)).toFixed(2)
-        ));
-
-        // Sync stored field
-        await User.findByIdAndUpdate(req.user.id, { availableBalance: liveBalance });
-
-        if (amount > liveBalance) {
+        if (amount > storedBalance) {
             return res.status(400).json({
-                message: `Insufficient balance. Your available balance is GHS ${liveBalance.toFixed(2)}.`
+                message: `Insufficient balance. Your available balance is GHS ${storedBalance.toFixed(2)}.`
             });
         }
 
@@ -2100,6 +2131,77 @@ app.get('/api/admin/users', auth, admin, async (req, res) => {
     try {
         const users = await User.find().select('-password').sort({ createdAt: -1 });
         res.json(users);
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+});
+
+// ── Admin: diagnose users whose availableBalance is lower than their commission total ──
+// Shows users where manual credits may have been wiped by the balance recalculation bug.
+app.get('/api/admin/balance-audit', auth, admin, async (req, res) => {
+    try {
+        const users = await User.find({ role: { $ne: 'admin' } })
+            .select('_id username email availableBalance totalEarned')
+            .lean();
+
+        const results = await Promise.all(users.map(async (user) => {
+            const userId = new (require('mongoose').Types.ObjectId)(user._id);
+
+            const [commResult, withdrawResult] = await Promise.all([
+                Commission.aggregate([
+                    { $match: { userId, status: 'available' } },
+                    { $group: { _id: null, total: { $sum: '$amount' } } }
+                ]),
+                Withdrawal.aggregate([
+                    { $match: { userId, status: { $in: ['approved', 'paid', 'completed'] } } },
+                    { $group: { _id: null, total: { $sum: '$amount' } } }
+                ])
+            ]);
+
+            const systemCommissions = parseFloat((commResult[0]?.total || 0).toFixed(2));
+            const totalWithdrawn    = parseFloat((withdrawResult[0]?.total || 0).toFixed(2));
+            const systemBalance     = parseFloat(Math.max(0, systemCommissions - totalWithdrawn).toFixed(2));
+            const storedBalance     = parseFloat((user.availableBalance || 0).toFixed(2));
+            const gap               = parseFloat((storedBalance - systemBalance).toFixed(2));
+
+            return {
+                userId:           user._id,
+                username:         user.username,
+                email:            user.email,
+                storedBalance,
+                systemCommissions,
+                totalWithdrawn,
+                systemBalance,
+                manualCredit:     gap > 0 ? gap : 0,
+                deficit:          gap < 0 ? Math.abs(gap) : 0,
+                status:           gap > 0.01 ? 'manual_credit' : gap < -0.01 ? 'shortfall' : 'ok'
+            };
+        }));
+
+        // Only return users that need attention
+        const affected = results.filter(r => r.status !== 'ok');
+        res.json({ total: results.length, affected: affected.length, users: affected });
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+});
+
+// ── Admin: manually set a user's availableBalance (for restoring wiped credits) ──
+app.post('/api/admin/balance-repair/:userId', auth, admin, async (req, res) => {
+    try {
+        const { newBalance, reason } = req.body;
+        if (newBalance === undefined || isNaN(parseFloat(newBalance))) {
+            return res.status(400).json({ message: 'newBalance is required' });
+        }
+        const balance = parseFloat(parseFloat(newBalance).toFixed(2));
+        const user = await User.findByIdAndUpdate(
+            req.params.userId,
+            { availableBalance: balance },
+            { new: true }
+        ).select('username email availableBalance');
+        if (!user) return res.status(404).json({ message: 'User not found' });
+        console.log(`[BalanceRepair] ${user.username} balance set to ${balance} by admin. Reason: ${reason || 'manual repair'}`);
+        res.json({ success: true, user });
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
