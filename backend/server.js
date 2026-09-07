@@ -1609,14 +1609,16 @@ app.get('/api/my-permitted-client-types', auth, async (req, res) => {
         if (!user) return res.status(404).json({ message: 'User not found' });
 
         // Look up the store name so the referral link uses it instead of a raw user ID
-        const storeSettings = await StoreSettings.findOne({ userId: req.user.id }).select('storeName storeSlug');
-        const storeName = storeSettings?.storeName || '';
-        const storeSlug = storeSettings?.storeSlug || slugify(storeName) || String(req.user.id);
+        const storeSettings = await StoreSettings.findOne({ userId: req.user.id }).select('storeName storeSlug useShortLink');
+        const storeName    = storeSettings?.storeName || '';
+        const storeSlug    = storeSettings?.storeSlug || slugify(storeName) || String(req.user.id);
+        const useShortLink = storeSettings?.useShortLink === true;
 
         res.json({
             permittedClientTypes: user.permittedClientTypes || [],
-            storeSlug,          // e.g. "jd-youngster-enterprise"
-            storeName           // e.g. "J.D Youngster Enterprise"  (for display purposes)
+            storeSlug,
+            storeName,
+            useShortLink        // true = dealer has short link enabled by admin
         });
     } catch (err) {
         res.status(500).json({ message: err.message });
@@ -2313,11 +2315,10 @@ app.get('/api/admin/store-settings', auth, admin, async (req, res) => {
 
 app.put('/api/admin/store-settings/:id', auth, admin, async (req, res) => {
     try {
-        const { storeName, storeDescription, whatsappNumber, whatsappGroupLink } = req.body;
-        const settings = await StoreSettings.findByIdAndUpdate(req.params.id,
-            { storeName, storeDescription, whatsappNumber, whatsappGroupLink },
-            { new: true }
-        );
+        const { storeName, storeDescription, whatsappNumber, whatsappGroupLink, useShortLink } = req.body;
+        const update = { storeName, storeDescription, whatsappNumber, whatsappGroupLink };
+        if (useShortLink !== undefined) update.useShortLink = Boolean(useShortLink);
+        const settings = await StoreSettings.findByIdAndUpdate(req.params.id, update, { new: true });
         res.json(settings);
     } catch (err) {
         res.status(500).json({ message: err.message });
