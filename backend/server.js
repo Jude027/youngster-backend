@@ -1904,58 +1904,8 @@ app.get('/referral/:slug', async (req, res) => {
     }
 });
 
-// ── Clean storefront route: GET /:slug/:clientType ───────────────────────────
-// Cleanest possible URL: jdyoungsterent.com/youngster-data-shop/Customers
-// Must be defined AFTER all other named routes to avoid shadowing them.
-app.get('/:slug/:clientType?', async (req, res) => {
-    const slug       = req.params.slug;
-    const clientType = req.params.clientType || req.query.client || 'Customers';
-    const destUrl    = `${FRONTEND_BASE}/Dashboard/dashboard2.html?store=${encodeURIComponent(slug)}&client=${encodeURIComponent(clientType)}`;
 
-    let storeName = 'Data Shop';
-    let storeDesc = 'Buy affordable data bundles here.';
-    let storeLogo = '';
-    try {
-        const store = await StoreSettings.findOne({
-            $or: [{ storeSlug: slug.toLowerCase() }, { previousSlugs: slug.toLowerCase() }]
-        }).lean();
-        if (store) {
-            storeName = store.storeName || storeName;
-            storeDesc = store.storeDescription || storeDesc;
-            storeLogo = store.storeLogo || '';
-        } else {
-            // Slug not found — not a valid store, skip
-            return res.status(404).send('Not found');
-        }
-    } catch (_) {
-        return res.status(404).send('Not found');
-    }
 
-    const logoTag = storeLogo ? `<meta property="og:image" content="${storeLogo}">` : '';
-    const esc = (s) => String(s || '').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-
-    res.setHeader('Content-Type', 'text/html; charset=utf-8');
-    res.setHeader('Cache-Control', 'no-store');
-    res.send(`<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="UTF-8">
-  <title>${esc(storeName)}</title>
-  <meta property="og:title"       content="${esc(storeName)}">
-  <meta property="og:description" content="${esc(storeDesc)}">
-  <meta property="og:type"        content="website">
-  <meta property="og:url"         content="${esc(destUrl)}">
-  ${logoTag}
-  <meta name="twitter:card"  content="summary">
-  <meta name="twitter:title" content="${esc(storeName)}">
-  <meta http-equiv="refresh" content="0;url=${esc(destUrl)}">
-  <script>window.location.replace(${JSON.stringify(destUrl)});</script>
-</head>
-<body></body>
-</html>`);
-});
-    const slug       = req.params.slug;
-    const clientType = req.params.clientType || req.query.client || 'Customers';
 // Redirect old ?store= URLs to clean /referral/ URLs
 app.get('/Dashboard/dashboard2', (req, res) => {
     const store = req.query.store;
@@ -4331,6 +4281,63 @@ app.delete('/api/admin/mtn-verifications/:id', auth, admin, async (req, res) => 
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
+});
+
+// ── Clean storefront route: GET /:slug/:clientType ───────────────────────────
+// Cleanest possible URL: jdyoungsterent.com/youngster-data-shop/Customers
+// Must be defined AFTER all other named routes to avoid shadowing them.
+app.get('/:slug/:clientType?', async (req, res, next) => {
+    const slug = req.params.slug;
+
+    // Skip this route for known system paths — let Express 404 handle them
+    const RESERVED = ['api', 'referral', 'Dashboard', 's', 'Admin', 'favicon.ico',
+                       'health', 'webhook', 'static', 'assets', 'public'];
+    if (RESERVED.includes(slug) || slug.startsWith('_')) return next();
+
+    const clientType = req.params.clientType || req.query.client || 'Customers';
+    const destUrl    = `${FRONTEND_BASE}/Dashboard/dashboard2.html?store=${encodeURIComponent(slug)}&client=${encodeURIComponent(clientType)}`;
+
+    let storeName = 'Data Shop';
+    let storeDesc = 'Buy affordable data bundles here.';
+    let storeLogo = '';
+    try {
+        const store = await StoreSettings.findOne({
+            $or: [{ storeSlug: slug.toLowerCase() }, { previousSlugs: slug.toLowerCase() }]
+        }).lean();
+        if (store) {
+            storeName = store.storeName || storeName;
+            storeDesc = store.storeDescription || storeDesc;
+            storeLogo = store.storeLogo || '';
+        } else {
+            // Slug not found — not a valid store, skip
+            return res.status(404).send('Not found');
+        }
+    } catch (_) {
+        return res.status(404).send('Not found');
+    }
+
+    const logoTag = storeLogo ? `<meta property="og:image" content="${storeLogo}">` : '';
+    const esc = (s) => String(s || '').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store');
+    res.send(`<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>${esc(storeName)}</title>
+  <meta property="og:title"       content="${esc(storeName)}">
+  <meta property="og:description" content="${esc(storeDesc)}">
+  <meta property="og:type"        content="website">
+  <meta property="og:url"         content="${esc(destUrl)}">
+  ${logoTag}
+  <meta name="twitter:card"  content="summary">
+  <meta name="twitter:title" content="${esc(storeName)}">
+  <meta http-equiv="refresh" content="0;url=${esc(destUrl)}">
+  <script>window.location.replace(${JSON.stringify(destUrl)});</script>
+</head>
+<body></body>
+</html>`);
 });
 
 // ==================== START SERVER ====================
