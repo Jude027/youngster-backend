@@ -4286,15 +4286,19 @@ app.delete('/api/admin/mtn-verifications/:id', auth, admin, async (req, res) => 
 // ── Clean storefront route: GET /:slug/:clientType ───────────────────────────
 // Cleanest possible URL: jdyoungsterent.com/youngster-data-shop/Customers
 // Must be defined AFTER all other named routes to avoid shadowing them.
-app.get('/:slug/:clientType?', async (req, res, next) => {
-    const slug = req.params.slug;
+app.get('/:slug/:clientType', async (req, res, next) => {
+    const slug       = req.params.slug;
+    const clientType = req.params.clientType;
 
-    // Skip this route for known system paths — let Express 404 handle them
+    // Skip reserved system paths
     const RESERVED = ['api', 'referral', 'Dashboard', 's', 'Admin', 'favicon.ico',
                        'health', 'webhook', 'static', 'assets', 'public'];
     if (RESERVED.includes(slug) || slug.startsWith('_')) return next();
 
-    const clientType = req.params.clientType || req.query.client || 'Customers';
+    return handleStorefrontSlug(slug, clientType, res, next);
+});
+
+async function handleStorefrontSlug(slug, clientType, res, next) {
     const destUrl    = `${FRONTEND_BASE}/Dashboard/dashboard2.html?store=${encodeURIComponent(slug)}&client=${encodeURIComponent(clientType)}`;
 
     let storeName = 'Data Shop';
@@ -4338,6 +4342,15 @@ app.get('/:slug/:clientType?', async (req, res, next) => {
 </head>
 <body></body>
 </html>`);
+}
+
+// Same route without clientType — defaults to Customers
+app.get('/:slug', async (req, res, next) => {
+    const slug = req.params.slug;
+    const RESERVED = ['api', 'referral', 'Dashboard', 's', 'Admin', 'favicon.ico',
+                       'health', 'webhook', 'static', 'assets', 'public'];
+    if (RESERVED.includes(slug) || slug.startsWith('_')) return next();
+    return handleStorefrontSlug(slug, req.query.client || 'Customers', res, next);
 });
 
 // ==================== START SERVER ====================
