@@ -9,6 +9,7 @@ const storeSettingsSchema = new mongoose.Schema({
     storeLogo: { type: String, default: '' },
     whatsappGroupLink: { type: String, default: '' },
     whatsappNumber: { type: String, default: '' },
+    useShortLink: { type: Boolean, default: false },
     updatedAt: { type: Date, default: Date.now }
 });
 
