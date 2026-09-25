@@ -4202,6 +4202,93 @@ app.get('/api/cron/update-order-status', async (req, res) => {
     }
 });
 
+// ============================================================
+// PUBLIC MTN PRECHECK PROXY
+// ============================================================
+// The customer browser calls our backend instead of calling
+// mamscoenterprise.com directly. This avoids browser CORS issues.
+
+app.post('/api/orders/mtn/precheck', async (req, res) => {
+    try {
+        const { phoneNumbers } = req.body;
+
+        if (
+            !Array.isArray(phoneNumbers) ||
+            phoneNumbers.length === 0
+        ) {
+            return res.status(400).json({
+                success: false,
+                message: 'phoneNumbers is required'
+            });
+        }
+
+        console.log(
+            '[MTN Precheck] Checking:',
+            phoneNumbers
+        );
+
+        const response = await fetch(
+            'https://mamscoenterprise.com/api/orders/mtn/precheck',
+            {
+                method: 'POST',
+
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+
+                body: JSON.stringify({
+                    phoneNumbers
+                })
+            }
+        );
+
+        const contentType =
+            response.headers.get('content-type') || '';
+
+        let data;
+
+        if (contentType.includes('application/json')) {
+            data = await response.json();
+        } else {
+            const text = await response.text();
+
+            console.error(
+                '[MTN Precheck] Non-JSON response:',
+                text
+            );
+
+            return res.status(502).json({
+                success: false,
+                message:
+                    'MTN precheck service returned an invalid response.'
+            });
+        }
+
+        console.log(
+            '[MTN Precheck] Response:',
+            response.status,
+            data
+        );
+
+        return res
+            .status(response.status)
+            .json(data);
+
+    } catch (error) {
+
+        console.error(
+            '[MTN Precheck] Proxy error:',
+            error
+        );
+
+        return res.status(502).json({
+            success: false,
+            message:
+                'MTN precheck service is currently unavailable.'
+        });
+    }
+});
+
 // ==================== MTN VERIFICATION SUBMISSIONS ====================
 
 // Dealer submits phone numbers for MTN verification
