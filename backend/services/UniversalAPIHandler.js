@@ -323,6 +323,43 @@ class UniversalAPIHandler {
                     }
                 ]
             };
+        }// ── Mamsco Enterprise ────────────────────────────────────────────────
+        // Mamsco uses one package ID for the MTN DATA package and the selected
+        // data size is sent separately as "bundle".
+        const isMamsco =
+            config &&
+            String(config.baseUrl || '').toLowerCase().includes('mamsco');
+
+        if (isMamsco) {
+            const MAMSCO_PACKAGE_ID = '65c63dd4b2acfce02a8f1ef5';
+
+            const bundleNumber = parseFloat(
+                String(orderData.capacity)
+                    .match(/^(\d+(?:\.\d+)?)/)?.[1]
+                ?? orderData.capacity
+            );
+
+            if (isNaN(bundleNumber)) {
+                throw new Error(
+                    `Invalid MTN bundle capacity for Mamsco: ${orderData.capacity}`
+                );
+            }
+
+            const recipient = formatGhanaPhone(
+                orderData.phoneNumber,
+                'national'
+            );
+
+            return {
+                orders: [
+                    {
+                        packageID: MAMSCO_PACKAGE_ID,
+                        bundle: String(bundleNumber),
+                        recipient,
+                        ref: orderData.reference || `REF-${Date.now()}`
+                    }
+                ]
+            };
         }
 
         // Default mappings if not provided
