@@ -3409,95 +3409,56 @@ app.post('/api/proxy/datahub-order', async (req, res) => {
         const { phone, volume } = req.body;
 
         if (!phone || !volume) {
-            return res.status(400).json({ success: false, message: 'phone and volume are required' });
-        }
-
-        // Find the DataHub provider configuration
-        const provider = await Provider.findOne({
-            $or: [
-                { name: { $in: ['DataHub', 'datahub', 'MTN', 'mtn'] } },
-                { 'apiConfigs.baseUrl': /datahub/i }
-            ]
-        });
-
-        let activeApiConfig = null;
-        if (provider) {
-            const configs = Array.isArray(provider.apiConfigs) ? provider.apiConfigs : [];
-            activeApiConfig = configs.find(c => c && c.enabled && String(c.baseUrl || '').toLowerCase().includes('datahub'));
-            if (!activeApiConfig) {
-                activeApiConfig = configs.find(c => c && c.enabled && !c.forUnverifiedNumbers);
-            }
-        }
-
-        const apiKey = activeApiConfig?.authHeaderValue
-            || provider?.apiConfig?.authHeaderValue
-            || provider?.apiKey
-            || process.env.DATAHUB_API_KEY;
-
-        if (!apiKey) {
-            return res.status(500).json({ success: false, message: 'DataHub API key not configured' });
-        }
-
-        const baseUrl = activeApiConfig?.baseUrl
-            ? String(activeApiConfig.baseUrl).replace(/\/+$/, '')
-            : 'https://user.datahubgh.com/api/external';
-
-        const orderUrl = baseUrl.includes('/api/external')
-            ? baseUrl + '/data-purchase'
-            : baseUrl + '/api/external/data-purchase';
-
-        console.log('[DataHubProxy] Placing order:', { phone, volume, orderUrl });
-
-        const capacityGB = String(Math.round(parseInt(volume) / 1000));
-        console.log('[DataHubProxy] Request body:', { recipient: phone, capacity: capacityGB, networkKey: req.body.networkKey || 'YELLO' });
-
-        const response = await fetch(orderUrl, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-API-Key': apiKey
-            },
-            body: JSON.stringify({ 
-                recipient: phone,
-                capacity: capacityGB,
-                networkKey: req.body.networkKey || 'YELLO'
-            })
-        });
-
-        const text = await response.text();
-        console.log('[DataHubProxy] Raw response status:', response.status);
-        console.log('[DataHubProxy] Raw response body:', text.slice(0, 500));
-
-        let result;
-        try {
-            result = JSON.parse(text);
-        } catch (e) {
-            console.error('[DataHubProxy] Response is not JSON:', text.slice(0, 200));
-            return res.status(502).json({
+            return res.status(400).json({
                 success: false,
-                message: `DataHub returned non-JSON response (status ${response.status})`,
-                raw: text.slice(0, 200)
+                message: 'phone and volume are required'
             });
         }
 
-        if (!response.ok || result?.success === false) {
-            console.log('[DataHubProxy] Order failed:', result);
-            return res.status(response.ok ? 422 : response.status).json({
+        // Convert Django's volume format (e.g. 5000) to GB (5)
+        const capacityGB = parseFloat(
+            String(volume).match(/^(\d+(?:\.\d+)?)/)?.[1]
+        ) / 1000;
+
+        if (!Number.isFinite(capacityGB) || capacityGB <= 0) {
+            return res.status(400).json({
                 success: false,
-                message: result?.message || result?.error || 'Order failed',
-                data: result
+                message: 'Invalid MTN volume'
             });
         }
 
-        console.log('[DataHubProxy] Order successful:', result);
-        return res.json({ success: true, data: result });
+        // Send the old Django order through the same Universal API Handler
+        // used by the new website.
+        const orderData = {
+            phoneNumber: phone,
+            capacity: capacityGB,
+            packageName: `${capacityGB}GB`,
+            network: 'MTN',
+            provider: 'MTN',
+            reference: req.body.reference || `DJANGO-${Date.now()}`
+        };
+
+        const result = await UniversalAPIHandler.processOrder(
+            'MTN',
+            orderData
+        );
+
+        console.log('[MTN Django Proxy] UniversalAPIHandler result:', result);
+
+        return res.status(200).json({
+            success: true,
+            ...result
+        });
 
     } catch (err) {
-        console.error('[DataHubProxy] Request failed:', err.message);
-        res.status(500).json({ success: false, message: 'DataHub order service unavailable' });
+        console.error('[MTN Django Proxy] Error:', err);
+
+        return res.status(500).json({
+            success: false,
+            message: err.message || 'MTN order service unavailable'
+        });
     }
 });
-
 
 // Re-calls the initiate endpoint (no otpcode) which makes Moolre fire a new SMS.
 app.post('/api/payment/resend-otp', async (req, res) => {
