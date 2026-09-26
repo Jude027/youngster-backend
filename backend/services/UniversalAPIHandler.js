@@ -255,7 +255,7 @@ class UniversalAPIHandler {
     static mapPayload(orderData, mapping, packageMapping, config) {
         const payload = {};
 
-        }// ── Mamsco Enterprise ────────────────────────────────────────────────
+        // ── Mamsco Enterprise ────────────────────────────────────────────────
         // Mamsco uses one package ID for the MTN DATA package and the selected
         // data size is sent separately as "bundle".
         const isMamsco =
