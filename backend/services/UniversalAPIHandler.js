@@ -598,8 +598,19 @@ class UniversalAPIHandler {
                 text: text
             };
         } catch (error) {
-            console.error('[UniversalAPIHandler] sendAPIRequest failed:', error.message);
-            throw new Error(`API request failed: ${error.message}`);
+            console.error('[UniversalAPIHandler] sendAPIRequest failed:', {
+                message: error.message,
+                cause: error.cause?.message,
+                code: error.cause?.code,
+                errno: error.cause?.errno,
+                syscall: error.cause?.syscall,
+                hostname: error.cause?.hostname
+            });
+        
+            throw new Error(
+                `API request failed: ${error.message}` +
+                (error.cause?.code ? ` (${error.cause.code})` : '')
+            );
         }
     }
 
