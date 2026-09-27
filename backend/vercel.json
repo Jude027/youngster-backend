@@ -8,7 +8,7 @@
   "crons": [
     {
       "path": "/api/cron/update-order-status",
-      "schedule": "*/1 * * * *"
+      "schedule": "*/2 * * * *"
     }
   ]
 }
