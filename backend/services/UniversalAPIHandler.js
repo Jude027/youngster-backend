@@ -321,7 +321,7 @@ class UniversalAPIHandler {
             String(config.baseUrl || '').toLowerCase().includes('mamsco');
 
         if (isMamsco) {
-            const MAMSCO_PACKAGE_ID = '65c63ea8b2acfce02a8f1ef9';
+            const MAMSCO_PACKAGE_ID = '65c63dd4b2acfce02a8f1ef5';
 
             const bundleNumber = parseFloat(
                 String(orderData.capacity)
