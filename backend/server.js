@@ -3368,30 +3368,42 @@ app.post('/api/payment/verify-beneficiary', async (req, res) => {
         console.log('[VerifyBeneficiary] Using DataHub endpoint:', verifyEndpoint,
             '| key preview:', `${String(apiKey).slice(0, 4)}...${String(apiKey).slice(-2)}`);
 
-        const response = await fetch(verifyEndpoint, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-API-Key': apiKey
-            },
-            body: JSON.stringify({
-                phone,
-                is_ported_number: resolvedIsPorted
-            })
-        });
-
+        const response = await fetch(
+            'https://mamscoenterprise.com/api/orders/mtn/precheck',
+            {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    phoneNumbers: [phone]
+                })
+            }
+        );
+        
         const result = await response.json();
 
-        if (!response.ok || result?.success === false) {
-            console.log('[VerifyBeneficiary] Verification failed:', result?.message || result?.error || 'Ineligible');
+        if (!response.ok || result?.valid !== true || result?.known !== true) {
+            console.log(
+                '[VerifyBeneficiary] Verification failed:',
+                result?.message || 'Number is not eligible'
+            );
+        
             return res.status(response.ok ? 422 : (response.status || 400)).json({
                 success: false,
-                message: result?.message || result?.error || 'Number is not eligible for this offer'
+                message: result?.message || 'Number is not eligible for this offer'
             });
         }
-
-        console.log('[VerifyBeneficiary] Phone number verified successfully:', phone);
-        return res.json({ success: true, ...result });
+        
+        console.log(
+            '[VerifyBeneficiary] Phone number verified successfully:',
+            phone
+        );
+        
+        return res.json({
+            success: true,
+            ...result
+        });
     } catch (err) {
         console.error('[VerifyBeneficiary] Verification request failed:', err.message);
         res.status(500).json({ success: false, message: 'Verification service unavailable, please try again' });
