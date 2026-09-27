@@ -3309,65 +3309,6 @@ app.post('/api/payment/verify-beneficiary', async (req, res) => {
             return res.status(400).json({ success: false, message: 'phone is required' });
         }
 
-        // Find the DataHub provider configuration to get the base URL and API key.
-        const provider = await Provider.findOne({
-            $or: [
-                { name: { $in: ['DataHub', 'datahub', 'MTN', 'mtn'] } },
-                { 'apiConfig.baseUrl': /datahub/i },
-                { 'apiConfigs.baseUrl': /datahub/i }
-            ]
-        });
-
-        let activeApiConfig = null;
-        if (provider) {
-            const configs = Array.isArray(provider.apiConfigs) ? provider.apiConfigs : [];
-            // Prefer a DataHub config
-            activeApiConfig = configs.find(c => c && c.enabled && String(c.baseUrl || '').toLowerCase().includes('datahub'));
-            if (!activeApiConfig) {
-                // Fall back to the first enabled standard config
-                activeApiConfig = configs.find(c => c && c.enabled && !c.forUnverifiedNumbers);
-            }
-            if (!activeApiConfig && provider.apiConfig?.enabled) {
-                activeApiConfig = provider.apiConfig;
-            }
-        }
-
-        // API key: prefer provider config, then env vars
-        const apiKey = activeApiConfig?.authHeaderValue
-            || provider?.apiConfig?.authHeaderValue
-            || provider?.apiKey
-            || process.env.DATAHUB_API_KEY
-            || process.env.XPRES_API_KEY;
-
-        if (!apiKey) {
-            console.error('[VerifyBeneficiary] No DataHub API key found. Set DATAHUB_API_KEY env var or configure the Provider\'s Auth Header Value.');
-            return res.status(500).json({ success: false, message: 'Verification service is not configured' });
-        }
-
-        // Base URL: use provider config or fall back to DataHub's root
-        const baseUrl = activeApiConfig?.baseUrl
-            ? String(activeApiConfig.baseUrl).replace(/\/+$/, '')
-            : 'https://user.datahubgh.com/api/external';
-
-        // Auto-construct the verify URL so no extra admin field is needed.
-        // DataHub verify path: /api/external/purchases/verify-number
-        // If the admin already stored the base URL as e.g. "https://datahub.com.gh/api/external"
-        // (typical because that's the prefix for /data-purchase), we just append the tail.
-        // If they stored the bare root "https://datahub.com.gh" we append the full path.
-        const DATAHUB_VERIFY_SUFFIX = '/purchases/verify-number';
-        const DATAHUB_EXTERNAL_PREFIX = '/api/external';
-        let verifyEndpoint;
-        if (baseUrl.includes('/api/external')) {
-            // baseUrl already has /api/external — just tack on the verify tail
-            verifyEndpoint = baseUrl.replace(/\/+$/, '') + DATAHUB_VERIFY_SUFFIX;
-        } else {
-            // baseUrl is root domain — append the full path
-            verifyEndpoint = baseUrl.replace(/\/+$/, '') + DATAHUB_EXTERNAL_PREFIX + DATAHUB_VERIFY_SUFFIX;
-        }
-
-        console.log('[VerifyBeneficiary] Using DataHub endpoint:', verifyEndpoint,
-            '| key preview:', `${String(apiKey).slice(0, 4)}...${String(apiKey).slice(-2)}`);
-
         const response = await fetch(
             'https://mamscoenterprise.com/api/orders/mtn/precheck',
             {
@@ -3381,9 +3322,37 @@ app.post('/api/payment/verify-beneficiary', async (req, res) => {
             }
         );
         
-        const result = await response.json();
-
-        if (!response.ok || result?.valid !== true || result?.known !== true) {
+        const contentType = response.headers.get('content-type') || '';
+        
+        let result;
+        
+        if (contentType.includes('application/json')) {
+            result = await response.json();
+        } else {
+            const text = await response.text();
+        
+            console.error(
+                '[VerifyBeneficiary] Mamsco returned non-JSON:',
+                text.slice(0, 500)
+            );
+        
+            return res.status(502).json({
+                success: false,
+                message: 'MTN verification service returned an invalid response.'
+            });
+        }
+        
+        console.log(
+            '[VerifyBeneficiary] Mamsco precheck response:',
+            response.status,
+            result
+        );
+        
+        if (
+            !response.ok ||
+            result?.valid !== true ||
+            result?.known !== true
+        ) {
             console.log(
                 '[VerifyBeneficiary] Verification failed:',
                 result?.message || 'Number is not eligible'
@@ -3391,7 +3360,7 @@ app.post('/api/payment/verify-beneficiary', async (req, res) => {
         
             return res.status(response.ok ? 422 : (response.status || 400)).json({
                 success: false,
-                message: result?.message || 'Number is not eligible for this offer'
+                message: 'Number is not eligible for this offer'
             });
         }
         
