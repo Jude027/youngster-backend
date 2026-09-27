@@ -81,7 +81,13 @@ async function checkAndUpdateOrder(order) {
     }
 
     const provider = await Provider.findOne({ name: providerName }).lean();
-    if (!provider?.apiConfig?.enabled || !provider.apiConfig.statusEndpoint) {
+
+    const activeConfig =
+        Array.isArray(provider?.apiConfigs) && provider.apiConfigs[0]?.enabled
+            ? provider.apiConfigs[0]
+            : provider?.apiConfig;
+    
+    if (!activeConfig?.enabled || !activeConfig.statusEndpoint) {
         console.log(`[OrderStatusUpdater] Skipping ${order._id} | provider ${providerName} has no status endpoint`);
         await Order.findByIdAndUpdate(order._id, { lastStatusUpdate: new Date() });
         return;
