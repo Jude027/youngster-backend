@@ -2769,7 +2769,21 @@ app.put('/api/admin/provider-api-config/:providerName', auth, admin, async (req,
         if (!provider) return res.status(404).json({ message: 'Provider not found' });
 
         if (apiConfig) {
-            provider.apiConfig = { ...provider.apiConfig, ...apiConfig };
+            provider.apiConfig = {
+                ...provider.apiConfig,
+                ...apiConfig
+            };
+        
+            // Keep the primary API config in sync.
+            // UniversalAPIHandler uses apiConfigs[0] for normal orders.
+            if (Array.isArray(provider.apiConfigs) && provider.apiConfigs.length > 0) {
+                provider.apiConfigs[0] = {
+                    ...provider.apiConfigs[0].toObject(),
+                    ...apiConfig
+                };
+        
+                provider.markModified('apiConfigs');
+            }
         }
         if (orderRouting) {
             const toNullableNumber = value => {
