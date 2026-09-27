@@ -161,6 +161,64 @@ class UniversalAPIHandler {
         // Map order data to API payload
         const mappedPayload = this.mapPayload(orderData, config.requestPayloadMapping, provider.packageMapping, sanitizedConfig);
 
+        const providerKey = (
+            orderData.provider ||
+            orderData.network ||
+            ''
+        ).toLowerCase().trim();
+        
+        const isSPFastITIShare =
+            (
+                providerKey === 'at ishare' ||
+                providerKey === 'at_ishare' ||
+                providerKey === 'airteltigo'
+            ) &&
+            String(config.baseUrl || '').toLowerCase().includes('spfastit');
+        
+        if (isSPFastITIShare) {
+            const apiKey =
+                sanitizedConfig.authHeaderValue ||
+                config.apiKey ||
+                '';
+        
+            const formBody = new URLSearchParams({
+                api_key: String(apiKey),
+                phone: String(mappedPayload.phone || ''),
+                bundle_mb: String(mappedPayload.bundle_mb || ''),
+                client_reference: String(
+                    mappedPayload.client_reference || ''
+                )
+            }).toString();
+        
+            const spFastHeaders = {
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'Accept': 'application/json',
+                'Origin':
+                    process.env.BACKEND_ORIGIN ||
+                    'https://youngster-backend.vercel.app',
+                'Referer':
+                    process.env.BACKEND_ORIGIN ||
+                    'https://youngster-backend.vercel.app'
+            };
+        
+            console.log('[UniversalAPIHandler] SPFastIT ATI Share request:', {
+                url,
+                method: 'POST',
+                phone: mappedPayload.phone,
+                bundle_mb: mappedPayload.bundle_mb,
+                client_reference: mappedPayload.client_reference,
+                apiKeyPresent: Boolean(apiKey)
+            });
+        
+            return {
+                url,
+                method: 'POST',
+                headers: spFastHeaders,
+                body: formBody,
+                fullConfig: sanitizedConfig
+            };
+        }
+
         // ── Field-name case normalisation ──────────────────────────────────
         // Admin panel entries are typed by hand and may use wrong casing.
         // DataHub requires camelCase field names — correct silently here so
@@ -390,35 +448,75 @@ class UniversalAPIHandler {
         }
 
         // ── Provider-specific overrides ──────────────────────────────────────
-        // XpresPortal AT Ishare — POST /api/v1/order/airteltigo
-        // Required fields: type, phone (233XXXXXXXXX no +), volume (in MB), offerSlug, webhookUrl
-        // Minimum volume: 50 MB. Capacity from orderData is in GB — convert to MB.
+        // SPFastIT AT Ishare
+        // POST /api/send.php
+        // Required: phone, bundle_mb, client_reference
+        // API key is supplied separately from the provider API config.
         const providerKey = (orderData.provider || orderData.network || '').toLowerCase().trim();
-        if (providerKey === 'at ishare' || providerKey === 'at_ishare' || providerKey === 'airteltigo') {
-            const phoneVal = payload.phone || payload.msisdn || payload.recipient || payload.phoneNumber || payload.recipientNumber || orderData.phoneNumber;
-
-            // Convert GB → MB. orderData.capacity is in GB (e.g. 1 for 1GB → 1024 MB)
-            const rawCapacity = payload.volume !== undefined ? payload.volume
-                : (payload.capacity !== undefined ? payload.capacity : orderData.capacity);
-            const capacityNum = parseFloat(String(rawCapacity).match(/^(\d+(?:\.\d+)?)/)?.[1] ?? rawCapacity);
-            // If value is already in MB (≥ 50) leave it; otherwise treat as GB and convert
-            const volumeMB = !isNaN(capacityNum)
-                ? (capacityNum < 50 ? Math.round(capacityNum * 1024) : Math.round(capacityNum))
-                : 1024;
-
-            const offerSlugVal = payload.offerSlug || 'airteltigo_ishare_portal';
-
-            // Clear all previous fields — XpresPortal rejects unknown fields
-            for (const key in payload) delete payload[key];
-
-            payload.type      = 'single';
-            payload.phone     = formatGhanaPhone(phoneVal, 'international').replace(/^\+/, ''); // 233XXXXXXXXX no +
-            payload.volume    = volumeMB;
-            payload.offerSlug = offerSlugVal;
-            payload.webhookUrl = process.env.XPRES_WEBHOOK_URL
-                || `${process.env.BACKEND_URL || 'https://youngster-backend-production.up.railway.app'}/api/webhooks/xpresportal`;
-
-            console.log('[UniversalAPIHandler] AT Ishare payload:', payload);
+        
+        if (
+            providerKey === 'at ishare' ||
+            providerKey === 'at_ishare' ||
+            providerKey === 'airteltigo'
+        ) {
+            const phoneVal =
+                payload.phone ||
+                payload.msisdn ||
+                payload.recipient ||
+                payload.phoneNumber ||
+                payload.recipientNumber ||
+                orderData.phoneNumber;
+        
+            const rawCapacity =
+                payload.bundle_mb !== undefined
+                    ? payload.bundle_mb
+                    : (payload.volume !== undefined
+                        ? payload.volume
+                        : (payload.capacity !== undefined
+                            ? payload.capacity
+                            : orderData.capacity));
+        
+            const capacityNum = parseFloat(
+                String(rawCapacity).match(/^(\d+(?:\.\d+)?)/)?.[1] ?? rawCapacity
+            );
+        
+            // App capacity is normally in GB.
+            // SPFastIT uses 1000 MB = 1 GB.
+            const bundleMB = !isNaN(capacityNum)
+                ? (capacityNum < 50
+                    ? Math.round(capacityNum * 1000)
+                    : Math.round(capacityNum))
+                : 1000;
+        
+            // Keep the same reference on retries so SPFastIT duplicate protection works.
+            const rawReference =
+                orderData.reference ||
+                orderData.clientReference ||
+                orderData.orderId ||
+                orderData._id ||
+                orderData.id ||
+                payload.client_reference ||
+                payload.reference ||
+                'ORDER';
+        
+            const clientReference = String(rawReference)
+                .replace(/[^A-Za-z0-9._:-]/g, '-')
+                .slice(0, 100);
+        
+            // Clear old XpresPortal fields.
+            for (const key in payload) {
+                delete payload[key];
+            }
+        
+            payload.phone = formatGhanaPhone(
+                phoneVal,
+                'international'
+            ).replace(/^\+/, '');
+        
+            payload.bundle_mb = bundleMB;
+            payload.client_reference = clientReference;
+        
+            console.log('[UniversalAPIHandler] SPFastIT AT Ishare payload:', payload);
         }
 
         // XpresPortal AT Bigtime — POST /api/v1/order/airteltigo (same endpoint, different offerSlug)
@@ -641,6 +739,43 @@ class UniversalAPIHandler {
     static parseAPIResponse(provider, response, activeApiConfig = null) {
         const config = activeApiConfig || getActiveApiConfig(provider) || provider.apiConfig || {};
 
+        const isSPFastITIShare =
+            String(provider?.name || '').toLowerCase().includes('ishare') &&
+            String(config?.baseUrl || '').toLowerCase().includes('spfastit');
+        
+        if (isSPFastITIShare) {
+            const body = response.body || {};
+            const spStatus = String(body.status || '').toLowerCase();
+        
+            return {
+                success: spStatus === 'success',
+                message:
+                    body.message ||
+                    (spStatus === 'success'
+                        ? 'Order queued successfully'
+                        : 'Order failed'),
+        
+                data: body,
+        
+                // SPFastIT uses transaction_id as the API reference.
+                reference:
+                    body.transaction_id ||
+                    body.client_reference,
+        
+                orderId:
+                    body.transaction_id ||
+                    body.client_reference,
+        
+                // queued / processing / completed / failed
+                orderStatus:
+                    body.status === 'success'
+                        ? (body.queue_status || 'queued')
+                        : spStatus,
+        
+                status: response.status
+            };
+        }
+
         // Declare all variables before use
         const successField = config.successField || 'success';
         const dataField = config.dataField || '';
@@ -709,31 +844,117 @@ class UniversalAPIHandler {
         try {
             const provider = await Provider.findOne({ name: providerName });
             const config = provider ? getActiveApiConfig(provider) : null;
-            if (!provider || !config || !config.statusEndpoint) {
+    
+            if (!provider || !config) {
+                throw new Error('Provider or API configuration not found');
+            }
+    
+            const isSPFastITIShare =
+                String(provider.name || '').toLowerCase().includes('ishare') &&
+                String(config.baseUrl || '').toLowerCase().includes('spfastit');
+    
+            // SPFastIT uses POST form data for status checks.
+            if (isSPFastITIShare) {
+                const baseUrl = this.cleanBaseUrl(config.baseUrl);
+    
+                const statusEndpoint = config.statusEndpoint ||
+                    '/api/check_order_status.php';
+    
+                const endpointWithSlash =
+                    this.cleanEndpoint(statusEndpoint);
+    
+                const url = `${baseUrl}${endpointWithSlash}`;
+    
+                const apiKey =
+                    config.authHeaderValue ||
+                    config.apiKey ||
+                    '';
+    
+                const formBody = new URLSearchParams({
+                    api_key: String(apiKey),
+                    transaction_id: String(reference)
+                }).toString();
+    
+                console.log('[UniversalAPIHandler] SPFastIT status request:', {
+                    url,
+                    transactionId: reference,
+                    apiKeyPresent: Boolean(apiKey)
+                });
+    
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'Accept': 'application/json'
+                    },
+                    body: formBody
+                });
+    
+                const text = await response.text();
+    
+                let data = {};
+                try {
+                    data = JSON.parse(text);
+                } catch (e) {
+                    return {
+                        success: false,
+                        message: `API returned status ${response.status}: ${text.slice(0, 200)}`
+                    };
+                }
+    
+                const status = String(data.status || '').toLowerCase();
+    
+                return {
+                    success: status === 'completed',
+                    message:
+                        data.message ||
+                        (status === 'completed'
+                            ? 'Order completed'
+                            : `Order status: ${status || 'unknown'}`),
+                    data,
+                    reference:
+                        data.transaction_id ||
+                        reference,
+                    orderId:
+                        data.transaction_id ||
+                        reference,
+                    orderStatus: status,
+                    status: response.status
+                };
+            }
+    
+            // Existing status handling for all other providers
+            if (!config.statusEndpoint) {
                 throw new Error('Provider or status endpoint not configured');
             }
-
+    
             const baseUrl = this.cleanBaseUrl(config.baseUrl);
+    
             const endpoint = config.statusEndpoint
                 .replace(':reference', reference)
                 .replace(':identifier', reference);
+    
             const endpointWithSlash = this.cleanEndpoint(endpoint);
             const url = `${baseUrl}${endpointWithSlash}`;
-
+    
             const headers = this.buildHeaders(config);
-
+    
             console.log('STATUS REQUEST', {
                 url,
                 reference,
-                headers: { ...headers, [config.authHeaderName]: '***' }
+                headers: {
+                    ...headers,
+                    [config.authHeaderName]: '***'
+                }
             });
-
+    
             const response = await fetch(url, {
                 method: config.statusMethod || 'GET',
                 headers
             });
-
+    
             const text = await response.text();
+    
             let data = {};
             try {
                 data = JSON.parse(text);
@@ -743,10 +964,19 @@ class UniversalAPIHandler {
                     message: `API returned status ${response.status}: ${text.slice(0, 200)}`
                 };
             }
-
-            return this.parseAPIResponse(provider, { status: response.status, body: data }, config);
+    
+            return this.parseAPIResponse(
+                provider,
+                {
+                    status: response.status,
+                    body: data
+                },
+                config
+            );
+    
         } catch (error) {
             console.error('Error checking order status:', error);
+    
             return {
                 success: false,
                 message: error.message
@@ -760,14 +990,94 @@ class UniversalAPIHandler {
     static async getBalance(providerName) {
         try {
             const provider = await Provider.findOne({ name: providerName });
+    
             if (!provider) {
                 throw new Error('Provider not found');
             }
-
+    
             const config = getActiveApiConfig(provider);
-
-            // Balance endpoint is optional - if not configured, just return success with no balance
-            if (!config || !config.balanceEndpoint) {
+    
+            if (!config) {
+                throw new Error('Provider API configuration not found');
+            }
+    
+            const isSPFastITIShare =
+                String(provider.name || '').toLowerCase().includes('ishare') &&
+                String(config.baseUrl || '').toLowerCase().includes('spfastit');
+    
+            // SPFastIT balance check
+            if (isSPFastITIShare) {
+                const baseUrl = this.cleanBaseUrl(config.baseUrl);
+    
+                const balanceEndpoint =
+                    config.balanceEndpoint ||
+                    '/api/check_balance.php';
+    
+                const endpointWithSlash =
+                    this.cleanEndpoint(balanceEndpoint);
+    
+                const url = `${baseUrl}${endpointWithSlash}`;
+    
+                const apiKey =
+                    config.authHeaderValue ||
+                    config.apiKey ||
+                    '';
+    
+                const formBody = new URLSearchParams({
+                    api_key: String(apiKey)
+                }).toString();
+    
+                console.log('[UniversalAPIHandler] SPFastIT balance request:', {
+                    url,
+                    apiKeyPresent: Boolean(apiKey)
+                });
+    
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'Accept': 'application/json'
+                    },
+                    body: formBody
+                });
+    
+                const text = await response.text();
+    
+                let data = {};
+                try {
+                    data = JSON.parse(text);
+                } catch (e) {
+                    return {
+                        success: false,
+                        message: `API returned status ${response.status}: ${text.slice(0, 200)}`
+                    };
+                }
+    
+                if (response.status < 200 || response.status >= 300) {
+                    return {
+                        success: false,
+                        message:
+                            data.message ||
+                            data.error ||
+                            `API returned status ${response.status}`
+                    };
+                }
+    
+                return {
+                    success: String(data.status || '').toLowerCase() === 'success',
+                    balance:
+                        data.balance ??
+                        data.data?.balance ??
+                        null,
+                    currency: data.currency || 'GHS',
+                    message:
+                        data.message ||
+                        'Balance retrieved successfully'
+                };
+            }
+    
+            // Existing balance handling for all other providers
+            if (!config.balanceEndpoint) {
                 return {
                     success: true,
                     message: 'Balance endpoint not configured for this provider',
@@ -775,74 +1085,93 @@ class UniversalAPIHandler {
                     currency: 'GHS'
                 };
             }
-
+    
             const baseUrl = this.cleanBaseUrl(config.baseUrl);
             const endpoint = this.cleanEndpoint(config.balanceEndpoint);
             const url = `${baseUrl}${endpoint}`;
-
+    
             const headers = this.buildHeaders(config);
-
-            console.log('[UniversalAPIHandler] Fetching balance:', {
-                providerName,
-                url,
-                headers: { ...headers, [config.authHeaderName]: '***' }
-            });
-
-            const isXpresPortal = String(config.baseUrl || '').toLowerCase().includes('xpresportal');
-
-            // AT Ishare / AT Bigtime (XpresPortal order-only endpoints) don't have
-            // a dedicated balance endpoint — return a friendly message instead of
-            // hitting an invalid URL and getting "Invalid request method".
-            if (isXpresPortal && (!config.balanceEndpoint || config.balanceEndpoint.includes('order'))) {
+    
+            const isXpresPortal =
+                String(config.baseUrl || '')
+                    .toLowerCase()
+                    .includes('xpresportal');
+    
+            if (
+                isXpresPortal &&
+                (!config.balanceEndpoint ||
+                    config.balanceEndpoint.includes('order'))
+            ) {
                 return {
                     success: true,
-                    message: 'Balance check not available for this XpresPortal provider. Orders are working if configured correctly.',
+                    message:
+                        'Balance check not available for this XpresPortal provider. Orders are working if configured correctly.',
                     balance: null,
                     currency: 'GHS'
                 };
             }
-
-            const method = isXpresPortal ? 'GET' : (config.balanceMethod && config.balanceMethod.toUpperCase() === 'POST' ? 'POST' : 'GET');
-
+    
+            const method = isXpresPortal
+                ? 'GET'
+                : (
+                    config.balanceMethod &&
+                    config.balanceMethod.toUpperCase() === 'POST'
+                        ? 'POST'
+                        : 'GET'
+                );
+    
             const response = await fetch(url, {
                 method,
                 headers
             });
-
+    
             const text = await response.text();
+    
             let data = {};
             try {
                 data = JSON.parse(text);
             } catch (e) {
-                console.error('[UniversalAPIHandler] Failed to parse balance response as JSON:', text);
                 return {
                     success: false,
-                    message: `API returned status ${response.status}. Expected JSON, got: ${text.slice(0, 200)}`
+                    message:
+                        `API returned status ${response.status}. ` +
+                        `Expected JSON, got: ${text.slice(0, 200)}`
                 };
             }
-
+    
             if (response.status !== 200) {
                 return {
                     success: false,
-                    message: data.message || data.error || `API returned status ${response.status}`
+                    message:
+                        data.message ||
+                        data.error ||
+                        `API returned status ${response.status}`
                 };
             }
-
+    
             if (isXpresPortal) {
                 return {
                     success: data.success === true,
-                    balance: data.balance !== undefined ? data.balance : null,
+                    balance:
+                        data.balance !== undefined
+                            ? data.balance
+                            : null,
                     currency: data.currency || 'GHS'
                 };
             }
-
+    
             return {
                 success: true,
-                balance: data.balance ?? data.data?.balance ?? null,
+                balance:
+                    data.balance ??
+                    data.data?.balance ??
+                    null,
                 currency: data.currency || 'GHS'
             };
+    
         } catch (error) {
             console.error('Error getting balance:', error);
+    
             return {
                 success: false,
                 message: error.message
