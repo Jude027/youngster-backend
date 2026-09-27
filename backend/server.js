@@ -3348,14 +3348,16 @@ app.post('/api/payment/verify-beneficiary', async (req, res) => {
             result
         );
         
+        const verification = result?.results?.[0];
+
         if (
             !response.ok ||
-            result?.valid !== true ||
-            result?.known !== true
+            verification?.valid !== true ||
+            verification?.known !== true
         ) {
             console.log(
                 '[VerifyBeneficiary] Verification failed:',
-                result?.message || 'Number is not eligible'
+                verification || result
             );
         
             return res.status(response.ok ? 422 : (response.status || 400)).json({
