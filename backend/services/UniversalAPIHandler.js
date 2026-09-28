@@ -219,6 +219,64 @@ class UniversalAPIHandler {
             };
         }
 
+        const isTelecelIGET =
+            (
+                providerKey === 'telecel' ||
+                providerKey === 'vodafone'
+            ) &&
+            String(config.baseUrl || '').toLowerCase().includes('iget.onrender.com');
+        
+        if (isTelecelIGET) {
+            const apiKey =
+                sanitizedConfig.authHeaderValue ||
+                config.apiKey ||
+                '';
+        
+            const telecelPayload = {
+                recipientNumber: String(
+                    mappedPayload.recipientNumber ||
+                    mappedPayload.phoneNumber ||
+                    mappedPayload.phone ||
+                    ''
+                ),
+                capacity: Number(
+                    mappedPayload.capacity ||
+                    orderData.capacity ||
+                    0
+                ),
+                bundleType:
+                    mappedPayload.bundleType ||
+                    'Telecel-5959',
+                reference:
+                    mappedPayload.reference ||
+                    orderData.reference ||
+                    orderData.orderId ||
+                    orderData._id
+            };
+        
+            console.log('[UniversalAPIHandler] Telecel IGET request:', {
+                url,
+                method: 'POST',
+                recipientNumber: telecelPayload.recipientNumber,
+                capacity: telecelPayload.capacity,
+                bundleType: telecelPayload.bundleType,
+                reference: telecelPayload.reference,
+                apiKeyPresent: Boolean(apiKey)
+            });
+        
+            return {
+                url,
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                    'X-API-Key': apiKey
+                },
+                body: JSON.stringify(telecelPayload),
+                fullConfig: sanitizedConfig
+            };
+        }
+
         // ── Field-name case normalisation ──────────────────────────────────
         // Admin panel entries are typed by hand and may use wrong casing.
         // DataHub requires camelCase field names — correct silently here so
@@ -776,6 +834,49 @@ class UniversalAPIHandler {
             };
         }
 
+        const isTelecelIGET =
+            (
+                String(provider?.name || '').toLowerCase().includes('telecel') ||
+                String(provider?.name || '').toLowerCase().includes('vodafone')
+            ) &&
+            String(config?.baseUrl || '').toLowerCase().includes('iget.onrender.com');
+        
+        if (isTelecelIGET) {
+            const body = response.body || {};
+            const order = body.data?.order || {};
+            const transaction = body.data?.transaction || {};
+        
+            const orderStatus = String(
+                order.status || ''
+            ).toLowerCase();
+        
+            return {
+                success:
+                    body.success === true &&
+                    orderStatus === 'completed',
+        
+                message:
+                    body.message ||
+                    (orderStatus === 'completed'
+                        ? 'Order completed successfully'
+                        : `Order status: ${orderStatus || 'unknown'}`),
+        
+                data: body,
+        
+                reference:
+                    order.orderReference ||
+                    transaction.reference,
+        
+                orderId:
+                    order.id ||
+                    order.orderReference,
+        
+                orderStatus,
+        
+                status: response.status
+            };
+        }
+
         // Declare all variables before use
         const successField = config.successField || 'success';
         const dataField = config.dataField || '';
@@ -919,6 +1020,96 @@ class UniversalAPIHandler {
                         data.transaction_id ||
                         reference,
                     orderStatus: status,
+                    status: response.status
+                };
+            }
+
+            const isTelecelIGET =
+                (
+                    String(provider.name || '').toLowerCase().includes('telecel') ||
+                    String(provider.name || '').toLowerCase().includes('vodafone')
+                ) &&
+                String(config.baseUrl || '').toLowerCase().includes('iget.onrender.com');
+            
+            if (isTelecelIGET) {
+                const baseUrl = this.cleanBaseUrl(config.baseUrl);
+            
+                const statusEndpoint =
+                    config.statusEndpoint ||
+                    '/api/developer/orders/reference/:orderRef';
+            
+                const endpoint = statusEndpoint
+                    .replace(':orderRef', encodeURIComponent(String(reference)))
+                    .replace(':reference', encodeURIComponent(String(reference)));
+            
+                const endpointWithSlash =
+                    this.cleanEndpoint(endpoint);
+            
+                const url = `${baseUrl}${endpointWithSlash}`;
+            
+                const apiKey =
+                    config.authHeaderValue ||
+                    config.apiKey ||
+                    '';
+            
+                console.log('[UniversalAPIHandler] Telecel IGET status request:', {
+                    url,
+                    reference,
+                    apiKeyPresent: Boolean(apiKey)
+                });
+            
+                const response = await fetch(url, {
+                    method: 'GET',
+                    headers: {
+                        'Accept': 'application/json',
+                        'X-API-Key': apiKey
+                    }
+                });
+            
+                const text = await response.text();
+            
+                let data = {};
+                try {
+                    data = JSON.parse(text);
+                } catch (e) {
+                    return {
+                        success: false,
+                        message:
+                            `API returned status ${response.status}: ${text.slice(0, 200)}`
+                    };
+                }
+            
+                const order = data.data?.order || {};
+                const transaction = data.data?.transaction || {};
+            
+                const status = String(
+                    order.status || ''
+                ).toLowerCase();
+            
+                return {
+                    success:
+                        data.success === true &&
+                        status === 'completed',
+            
+                    message:
+                        data.message ||
+                        (status === 'completed'
+                            ? 'Order completed successfully'
+                            : `Order status: ${status || 'unknown'}`),
+            
+                    data,
+            
+                    reference:
+                        order.orderReference ||
+                        reference,
+            
+                    orderId:
+                        order.id ||
+                        order.orderReference ||
+                        reference,
+            
+                    orderStatus: status,
+            
                     status: response.status
                 };
             }
