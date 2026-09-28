@@ -2193,7 +2193,16 @@ app.post('/api/admin/test-order', auth, admin, async (req, res) => {
             package: provider,
             bundle_size: bundleVal,
             amount: parseFloat(amount) || 5.00,
-            status: status || 'processing',
+            status:
+                status === 'processing'
+                    ? 'Processing'
+                    : status === 'pending'
+                        ? 'Pending'
+                        : status === 'completed'
+                            ? 'Completed'
+                            : status === 'failed'
+                                ? 'Failed'
+                                : status || 'Processing',            
             storeSlug: null,
             clientType: 'Test',
             created: new Date()
