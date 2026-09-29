@@ -130,7 +130,7 @@ async function checkAndUpdateOrder(order) {
             } else if (rawStatus === 'processing' || rawStatus === 'pending') {
                 newStatus = 'Processing';
             }
-        }
+    
         // If no clear status, leave it unchanged and keep polling
 
         if (newStatus && newStatus !== order.status) {
