@@ -118,8 +118,13 @@ async function checkAndUpdateOrder(order) {
         let newStatus = xpresMap[rawStatus] || null;
 
         if (!newStatus) {
-            if (rawStatus === 'success' || rawStatus === 'completed') {
+            if (
+                rawStatus === 'success' ||
+                rawStatus === 'completed' ||
+                rawStatus === 'sent'
+            ) {
                 newStatus = 'Completed';
+            }
             } else if (rawStatus === 'failed' || rawStatus === 'rejected') {
                 newStatus = 'Failed';
             } else if (rawStatus === 'processing' || rawStatus === 'pending') {
