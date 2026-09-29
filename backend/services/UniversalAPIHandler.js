@@ -1158,8 +1158,9 @@ class UniversalAPIHandler {
             const baseUrl = this.cleanBaseUrl(config.baseUrl);
     
             const endpoint = config.statusEndpoint
-                .replace(':reference', reference)
-                .replace(':identifier', reference);
+                .replace(':reference', encodeURIComponent(String(reference)))
+                .replace(':identifier', encodeURIComponent(String(reference)))
+                .replace(':id', encodeURIComponent(String(reference)));
     
             const endpointWithSlash = this.cleanEndpoint(endpoint);
             const url = `${baseUrl}${endpointWithSlash}`;
