@@ -4,11 +4,5 @@
   "buildCommand": "npm run build",
   "rewrites": [
     { "source": "/(.*)", "destination": "/api/index" }
-  ],
-  "crons": [
-    {
-      "path": "/api/cron/update-order-status",
-      "schedule": "*/2 * * * *"
-    }
   ]
 }
