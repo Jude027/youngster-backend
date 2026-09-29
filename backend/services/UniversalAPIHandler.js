@@ -875,6 +875,44 @@ class UniversalAPIHandler {
             };
         }
 
+        const isMamsco =
+            String(config?.baseUrl || '').toLowerCase().includes('mamscoenterprise');
+        
+        if (isMamsco) {
+            const body = response.body || {};
+        
+            const order = body.data || body;
+        
+            const orderStatus = String(
+                order.status || ''
+            ).toLowerCase();
+        
+            return {
+                success:
+                    response.status >= 200 &&
+                    response.status < 300,
+        
+                message:
+                    body.message ||
+                    `Order status: ${orderStatus || 'unknown'}`,
+        
+                data: body,
+        
+                reference:
+                    order.id ||
+                    order.orderID ||
+                    order.ref,
+        
+                orderId:
+                    order.id ||
+                    order.orderID,
+        
+                orderStatus,
+        
+                status: response.status
+            };
+        }
+
         // Declare all variables before use
         const successField = config.successField || 'success';
         const dataField = config.dataField || '';
