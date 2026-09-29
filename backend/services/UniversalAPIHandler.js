@@ -851,9 +851,7 @@ class UniversalAPIHandler {
             ).toLowerCase();
         
             return {
-                success:
-                    body.success === true &&
-                    orderStatus === 'completed',
+                success: body.success === true,
         
                 message:
                     body.message ||
