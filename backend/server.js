@@ -3466,6 +3466,131 @@ app.post('/api/proxy/datahub-order', async (req, res) => {
     }
 });
 
+// ── AT Ishare Order Proxy ────────────────────────────────────────────────────
+// PythonAnywhere/Django calls Vercel, which forwards the AT Ishare order
+// through UniversalAPIHandler to SPFastIT.
+// POST /api/proxy/at-ishare-order
+// Body: { phone, volume, reference (optional) }
+app.post('/api/proxy/at-ishare-order', async (req, res) => {
+    try {
+        const { phone, volume } = req.body;
+
+        if (!phone || !volume) {
+            return res.status(400).json({
+                success: false,
+                message: 'phone and volume are required'
+            });
+        }
+
+        // Convert Django's volume format (e.g. 1000) to GB (1)
+        const capacityGB = parseFloat(
+            String(volume).match(/^(\d+(?:\.\d+)?)/)?.[1]
+        ) / 1000;
+
+        if (!Number.isFinite(capacityGB) || capacityGB <= 0) {
+            return res.status(400).json({
+                success: false,
+                message: 'Invalid AT Ishare volume'
+            });
+        }
+
+        const orderData = {
+            phoneNumber: phone,
+            capacity: capacityGB,
+            packageName: `${capacityGB}GB`,
+            network: 'AT Ishare',
+            provider: 'AT Ishare',
+            reference: req.body.reference || `DJANGO-AT-${Date.now()}`
+        };
+
+        const result = await UniversalAPIHandler.processOrder(
+            'AT Ishare',
+            orderData
+        );
+
+        console.log(
+            '[AT Ishare Django Proxy] UniversalAPIHandler result:',
+            result
+        );
+
+        return res.status(200).json({
+            success: true,
+            ...result
+        });
+
+    } catch (err) {
+        console.error('[AT Ishare Django Proxy] Error:', err);
+
+        return res.status(500).json({
+            success: false,
+            message: err.message || 'AT Ishare order service unavailable'
+        });
+    }
+});
+
+// ── Telecel Order Proxy ──────────────────────────────────────────────────────
+// PythonAnywhere/Django calls Vercel, which forwards the Telecel order
+// through UniversalAPIHandler to iGet.
+// POST /api/proxy/telecel-order
+// Body: { phone, volume, reference (optional) }
+app.post('/api/proxy/telecel-order', async (req, res) => {
+    try {
+        const { phone, volume } = req.body;
+
+        if (!phone || !volume) {
+            return res.status(400).json({
+                success: false,
+                message: 'phone and volume are required'
+            });
+        }
+
+        // Convert Django's volume format (e.g. 1000) to GB (1)
+        const capacityGB = parseFloat(
+            String(volume).match(/^(\d+(?:\.\d+)?)/)?.[1]
+        ) / 1000;
+
+        if (!Number.isFinite(capacityGB) || capacityGB <= 0) {
+            return res.status(400).json({
+                success: false,
+                message: 'Invalid Telecel volume'
+            });
+        }
+
+        const orderData = {
+            phoneNumber: phone,
+            capacity: capacityGB,
+            packageName: `${capacityGB}GB`,
+            network: 'Telecel',
+            provider: 'Telecel',
+            bundleType: 'Telecel-5959',
+            reference: req.body.reference || `DJANGO-TC-${Date.now()}`
+        };
+
+        const result = await UniversalAPIHandler.processOrder(
+            'Telecel',
+            orderData
+        );
+
+        console.log(
+            '[Telecel Django Proxy] UniversalAPIHandler result:',
+            result
+        );
+
+        return res.status(200).json({
+            success: true,
+            ...result
+        });
+
+    } catch (err) {
+        console.error('[Telecel Django Proxy] Error:', err);
+
+        return res.status(500).json({
+            success: false,
+            message: err.message || 'Telecel order service unavailable'
+        });
+    }
+});
+
 // Re-calls the initiate endpoint (no otpcode) which makes Moolre fire a new SMS.
 app.post('/api/payment/resend-otp', async (req, res) => {
     try {
