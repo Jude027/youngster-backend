@@ -321,10 +321,9 @@ async function resolveOriginalPackagePrice({ userId, provider, packageName, clie
         referralOriginalPrice: referralOriginalPrice || null
     });
 
-    if (Number.isFinite(referralOriginalPrice) && referralOriginalPrice > 0) {
-        return referralOriginalPrice;
-    }
-
+    // Always prefer the live BasePrice selected by the user's role mapping.
+    // ReferralPrice.originalPrice is a snapshot and can become stale after an
+    // administrator edits Base Prices, so it must only be a fallback.
     const user = await User.findById(userId).select('role').lean();
     const normalizedUserRole = String(user?.role || '').trim();
     const mapping = normalizedUserRole
@@ -363,6 +362,11 @@ async function resolveOriginalPackagePrice({ userId, provider, packageName, clie
         }).lean();
         const basePriceValue = Number(basePrice?.price);
         if (Number.isFinite(basePriceValue) && basePriceValue > 0) return basePriceValue;
+    }
+
+    // Compatibility fallback for records without a matching BasePrice row.
+    if (Number.isFinite(referralOriginalPrice) && referralOriginalPrice > 0) {
+        return referralOriginalPrice;
     }
 
     const masterQuery = {
@@ -1729,10 +1733,14 @@ app.get('/api/my-original-prices', auth, async (req, res) => {
         const user = await User.findById(req.user.id).select('role');
         if (!user) return res.status(404).json({ message: 'User not found' });
 
-        const userRole = user.role;
+        const userRole = String(user.role || '').trim();
+        res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+        res.set('Pragma', 'no-cache');
+        res.set('Expires', '0');
 
-        // Find which BasePrice clientType column this role maps to
-        const mapping = await RolePriceMapping.findOne({ role: userRole });
+        // Match role names case-insensitively so harmless capitalization
+        // differences cannot make the endpoint fall back to stale MasterPrice data.
+        const mapping = await RolePriceMapping.findOne({ role: exactTextPattern(userRole) });
 
         if (!mapping) {
             // No mapping set — fall back to MasterPrice originalPrice if available,
@@ -1746,10 +1754,10 @@ app.get('/api/my-original-prices', auth, async (req, res) => {
             return res.json(result);
         }
 
-        const clientTypeColumn = mapping.basePriceClientType;
+        const clientTypeColumn = String(mapping.basePriceClientType || '').trim();
 
-        // Pull all BasePrice rows for that column
-        const basePrices = await BasePrice.find({ clientType: clientTypeColumn })
+        // Pull current BasePrice rows for the mapped column (case-insensitive).
+        const basePrices = await BasePrice.find({ clientType: exactTextPattern(clientTypeColumn) })
             .sort({ provider: 1, packageName: 1 });
 
         const result = basePrices.map(bp => ({
@@ -2305,8 +2313,40 @@ app.put('/api/admin/transactions/:id', auth, admin, async (req, res) => {
 
 app.get('/api/admin/referral-prices', auth, admin, async (req, res) => {
     try {
-        const prices = await ReferralPrice.find().populate('userId', 'username businessName');
-        res.json(prices);
+        // Admin view must show the CURRENT BasePrice selected by each user's
+        // role mapping. ReferralPrice.originalPrice is only a saved snapshot
+        // and becomes stale when an admin edits Base Prices.
+        res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+        res.set('Pragma', 'no-cache');
+        res.set('Expires', '0');
+
+        const prices = await ReferralPrice.find().populate('userId', 'username businessName role').lean();
+        const mappings = await RolePriceMapping.find().lean();
+        const mappingByRole = new Map(mappings.map(mapping => [
+            String(mapping.role || '').trim().toLowerCase(),
+            String(mapping.basePriceClientType || '').trim()
+        ]));
+
+        const enrichedPrices = await Promise.all(prices.map(async price => {
+            const role = String(price.userId?.role || '').trim();
+            const mappedClientType = mappingByRole.get(role.toLowerCase());
+            if (!mappedClientType || !price.provider || !price.packageName) return price;
+
+            const basePrice = await BasePrice.findOne({
+                provider: exactTextPattern(price.provider),
+                packageName: { $in: buildPackageNamePatterns(price.packageName) },
+                clientType: exactTextPattern(mappedClientType)
+            }).lean();
+
+            // Keep the legacy snapshot only when there is no matching BasePrice
+            // row; never overwrite the stored referral record as a side effect.
+            if (basePrice && Number.isFinite(Number(basePrice.price))) {
+                return { ...price, originalPrice: Number(basePrice.price), originalPriceSource: 'base-price', mappedBasePriceClientType: mappedClientType };
+            }
+            return { ...price, originalPriceSource: 'stored-fallback', mappedBasePriceClientType: mappedClientType };
+        }));
+
+        res.json(enrichedPrices);
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
