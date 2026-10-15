@@ -484,16 +484,74 @@ async function recordOrderCommission({ userId, order, paymentTransaction, transa
     }
 
     const existing = await Commission.findOne({ source: 'order', sourceId: order._id });
-    if (existing) return existing;
+    if (existing) {
+        // Idempotency guard: never credit the same order twice. Backfill snapshot
+        // fields only when this existing record is missing them; do not change amount/balance.
+        const snapshot = {
+            orderId: order._id,
+            paymentTransactionId: paymentTransaction?.transactionId || transactionRecord?.transactionId || order?.transactionId || undefined,
+            gatewayTransactionId: paymentTransaction?.gatewayTransactionId || undefined,
+            storeSlug: storeSlug || undefined,
+            clientType: clientType || undefined,
+            provider: provider || undefined,
+            packageName: packageName || undefined,
+            sellingPrice: clientPaid,
+            originalPriceUsed: originalPriceValue,
+            expectedAmount: commissionAmount,
+            creditedAmount: Number(existing.amount || 0),
+            pricingUserId: commissionUserId,
+            gatewayName: gatewayName || paymentTransaction?.paymentGateway || undefined,
+            auditStatus: Math.abs(Number(existing.amount || 0) - commissionAmount) < 0.01 ? 'matched' : 'needs-investigation'
+        };
+        let changed = false;
+        for (const [key, value] of Object.entries(snapshot)) {
+            if (value !== undefined && (existing[key] === undefined || existing[key] === null || existing[key] === '')) {
+                existing[key] = value;
+                changed = true;
+            }
+        }
+        if (changed) await existing.save();
+        return existing;
+    }
 
-    const commission = await Commission.create({
+    let commission;
+    try {
+        commission = await Commission.create({
         userId: commissionUserId,
         amount: commissionAmount,
         source: 'order',
         sourceId: order._id,
+        orderId: order._id,
+        idempotencyKey: `order:${order._id.toString()}`,
+        paymentTransactionId: paymentTransaction?.transactionId || transactionRecord?.transactionId || order?.transactionId,
+        gatewayTransactionId: paymentTransaction?.gatewayTransactionId,
+        storeSlug,
+        clientType,
+        provider,
+        packageName,
+        sellingPrice: clientPaid,
+        originalPriceUsed: originalPriceValue,
+        expectedAmount: commissionAmount,
+        creditedAmount: commissionAmount,
+        pricingUserId: commissionUserId,
+        gatewayName: gatewayName || paymentTransaction?.paymentGateway,
+        calculationVersion: 'selling-minus-original-v1',
+        auditStatus: 'matched',
         description: `${provider} ${packageName} commission via ${gatewayName || paymentTransaction?.paymentGateway || 'payment'}`
-    });
+        });
+    } catch (createError) {
+        // A concurrent callback may have won the unique idempotency key.
+        if (createError?.code === 11000) {
+            const racedRecord = await Commission.findOne({ $or: [
+                { source: 'order', sourceId: order._id },
+                { idempotencyKey: `order:${order._id.toString()}` }
+            ] });
+            if (racedRecord) return racedRecord;
+        }
+        throw createError;
+    }
 
+    // Balance update occurs only after a new ledger record is created.
     await User.findByIdAndUpdate(commissionUserId, {
         $inc: {
             availableBalance: commissionAmount,
@@ -506,7 +564,8 @@ async function recordOrderCommission({ userId, order, paymentTransaction, transa
         orderId: order._id.toString(),
         commissionId: commission._id.toString(),
         clientPaid,
-        originalPrice,
+        originalPrice: originalPriceValue,
+        clientType,
         commissionAmount
     });
 
@@ -2140,6 +2199,186 @@ app.get('/api/admin/balance-audit', auth, admin, async (req, res) => {
         const affected = results.filter(r => r.status !== 'ok');
         res.json({ total: results.length, affected: affected.length, users: affected });
     } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+});
+
+
+// ── Commissions: private, read-only history for the signed-in agent ──
+app.get('/api/commissions/my', auth, async (req, res) => {
+    try {
+        const userId = req.user.id || req.user._id;
+        const records = await Commission.find({ userId })
+            .sort({ createdAt: -1 })
+            .limit(Math.min(Math.max(parseInt(req.query.limit, 10) || 100, 1), 250))
+            .lean();
+        res.json({ total: records.length, commissions: records });
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+});
+
+// ── Admin: searchable commission ledger. Historical fields remain null when unavailable. ──
+app.get('/api/admin/commissions', auth, admin, async (req, res) => {
+    try {
+        const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 250, 1), 1000);
+        const filter = {};
+        if (req.query.status && req.query.status !== 'all') filter.status = req.query.status;
+        if (req.query.userId) filter.userId = req.query.userId;
+        if (req.query.source && req.query.source !== 'all') filter.source = req.query.source;
+
+        let records = await Commission.find(filter)
+            .populate('userId', 'username email')
+            .sort({ createdAt: -1 })
+            .limit(limit)
+            .lean();
+
+        const search = String(req.query.search || '').trim().toLowerCase();
+        if (search) {
+            records = records.filter((r) => {
+                const values = [
+                    r.userId?.username, r.userId?.email, r.storeSlug, r.clientType,
+                    r.provider, r.packageName, r.paymentTransactionId, r.gatewayTransactionId,
+                    r.orderId?.toString(), r.sourceId?.toString(), r.description, r.status
+                ];
+                return values.some(v => String(v ?? '').toLowerCase().includes(search));
+            });
+        }
+
+        const summary = records.reduce((acc, r) => {
+            const amount = Number(r.amount || 0);
+            acc.totalRecorded += amount;
+            if (r.status === 'available') acc.available += amount;
+            if (r.status === 'pending') acc.pending += amount;
+            if (r.status === 'withdrawn') acc.withdrawn += amount;
+            if (r.auditStatus === 'needs-investigation') acc.needsInvestigation += 1;
+            return acc;
+        }, { totalRecorded: 0, available: 0, pending: 0, withdrawn: 0, needsInvestigation: 0 });
+        Object.keys(summary).filter(k => k !== 'needsInvestigation').forEach(k => summary[k] = Number(summary[k].toFixed(2)));
+
+        res.json({ total: records.length, limit, summary, commissions: records });
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+});
+
+// ── Admin: compare confirmed payments with commission ledger; this endpoint never credits balances. ──
+app.get('/api/admin/commission-audit', auth, admin, async (req, res) => {
+    try {
+        const paymentRows = await PaymentTransaction.find({ status: 'success' })
+            .sort({ initiatedAt: -1 }).limit(500).lean();
+        const transactionRows = await Transaction.find({ status: 'Completed', orderId: { $exists: true, $ne: null } })
+            .sort({ created: -1 }).limit(500).lean();
+
+        const orderIds = [...new Set([
+            ...paymentRows.map(p => p.orderId?.toString()).filter(Boolean),
+            ...transactionRows.map(t => t.orderId?.toString()).filter(Boolean)
+        ])];
+        const transactionIds = [...new Set(paymentRows.map(p => p.transactionId).filter(Boolean))];
+        const orderOr = [];
+        if (orderIds.length) orderOr.push({ _id: { $in: orderIds } });
+        if (transactionIds.length) orderOr.push({ transactionId: { $in: transactionIds } });
+        const orders = orderOr.length ? await Order.find({ $or: orderOr }).lean() : [];
+        const orderById = new Map(orders.map(o => [o._id.toString(), o]));
+        const orderByTransactionId = new Map(orders.filter(o => o.transactionId).map(o => [String(o.transactionId), o]));
+
+        const byPaymentOrder = new Map();
+        for (const payment of paymentRows) {
+            const order = (payment.orderId && orderById.get(payment.orderId.toString()))
+                || (payment.transactionId && orderByTransactionId.get(String(payment.transactionId)))
+                || null;
+            const key = order?._id?.toString() || payment.orderId?.toString() || payment.transactionId;
+            if (key && !byPaymentOrder.has(key)) byPaymentOrder.set(key, { payment, order });
+        }
+        for (const tx of transactionRows) {
+            const order = (tx.orderId && orderById.get(tx.orderId.toString())) || null;
+            const key = order?._id?.toString() || tx.orderId?.toString();
+            if (key && !byPaymentOrder.has(key)) byPaymentOrder.set(key, { payment: null, order, transaction: tx });
+        }
+
+        const auditOrderIds = [...new Set([...byPaymentOrder.values()]
+            .map(row => (row.order?._id || row.payment?.orderId || row.transaction?.orderId)?.toString())
+            .filter(Boolean))];
+        const allOrderCommissions = auditOrderIds.length
+            ? await Commission.find({ source: 'order', sourceId: { $in: auditOrderIds } })
+                .populate('userId', 'username email').lean()
+            : [];
+        const commissionsByOrder = new Map();
+        for (const commission of allOrderCommissions) {
+            const key = commission.sourceId?.toString();
+            if (!commissionsByOrder.has(key)) commissionsByOrder.set(key, []);
+            commissionsByOrder.get(key).push(commission);
+        }
+
+        const findings = [];
+        for (const [key, row] of byPaymentOrder.entries()) {
+            const { payment, order, transaction } = row;
+            const orderId = order?._id || payment?.orderId || transaction?.orderId || null;
+            const existing = orderId ? (commissionsByOrder.get(orderId.toString()) || []) : [];
+            const sellingPrice = Number(payment?.amount ?? order?.amount ?? transaction?.amount ?? 0);
+            const userId = order?.userId || payment?.userId || transaction?.userId || null;
+            const storeSlug = payment?.storeSlug || order?.storeSlug || transaction?.storeSlug || null;
+            const clientType = payment?.clientType || payment?.metadata?.clientType || order?.clientType || transaction?.clientType || null;
+            const provider = payment?.metadata?.orderProvider || payment?.metadata?.packageProvider || payment?.provider || order?.providerName || order?.package || null;
+            const packageName = resolvePaymentPackageName(payment || {}) || order?.packageName || order?.bundleSize || order?.bundle_size || null;
+
+            let originalPrice = null;
+            if (userId && provider && packageName && clientType) {
+                const candidate = await resolveOriginalPackagePrice({ userId, provider, packageName, clientType });
+                if (Number.isFinite(Number(candidate)) && Number(candidate) > 0) originalPrice = Number(candidate);
+            }
+            const expectedAmount = originalPrice !== null && Number.isFinite(sellingPrice)
+                ? Number(Math.max(0, sellingPrice - originalPrice).toFixed(2)) : null;
+            let status = 'matched';
+            if (!orderId || !order) status = 'missing_order';
+            else if (!existing.length) status = expectedAmount === null ? 'missing_original_price' : (expectedAmount > 0 ? 'missing_record' : 'zero_commission_expected');
+            else if (existing.length > 1) status = 'duplicate_records';
+            else if (existing[0].originalPriceUsed == null && originalPrice === null) status = 'historical_details_unavailable';
+            else if (expectedAmount === null) status = 'missing_original_price';
+            else if (Math.abs(Number(existing[0].amount || 0) - expectedAmount) >= 0.01) status = 'amount_mismatch';
+
+            findings.push({
+                key,
+                orderId: orderId?.toString() || null,
+                paymentTransactionId: payment?.transactionId || order?.transactionId || transaction?.transactionId || null,
+                gatewayTransactionId: payment?.gatewayTransactionId || null,
+                username: existing[0]?.userId?.username || null,
+                userId: (existing[0]?.userId?._id || userId)?.toString?.() || null,
+                storeSlug,
+                provider,
+                packageName,
+                clientType,
+                sellingPrice: Number.isFinite(sellingPrice) && sellingPrice > 0 ? sellingPrice : null,
+                originalPriceUsed: existing[0]?.originalPriceUsed ?? null,
+                currentOriginalPrice: originalPrice,
+                expectedCommission: expectedAmount,
+                recordedCommission: existing.length === 1 ? Number(existing[0].amount || 0) : existing.length ? existing.reduce((sum, c) => sum + Number(c.amount || 0), 0) : null,
+                commissionStatus: existing[0]?.status || null,
+                auditStatus: status,
+                note: originalPrice !== null && existing[0]?.originalPriceUsed == null
+                    ? 'Historical record has no saved original-price snapshot; expected amount uses the current mapped price and requires review.'
+                    : (!existing.length && expectedAmount > 0
+                        ? 'No commission record found. Review payment and attribution before any manual credit.'
+                        : 'Audit only; no balance or commission record was changed.')
+            });
+        }
+
+        const counts = findings.reduce((acc, item) => {
+            acc[item.auditStatus] = (acc[item.auditStatus] || 0) + 1;
+            return acc;
+        }, {});
+        res.json({
+            scanned: findings.length,
+            counts,
+            findings: findings.sort((a, b) => {
+                const priority = ['missing_record', 'amount_mismatch', 'duplicate_records', 'missing_original_price', 'missing_order'];
+                return (priority.indexOf(a.auditStatus) < 0 ? 99 : priority.indexOf(a.auditStatus))
+                    - (priority.indexOf(b.auditStatus) < 0 ? 99 : priority.indexOf(b.auditStatus));
+            }),
+            safety: 'Read-only audit. No historical commission is automatically created or credited.'
+        });
+    } catch (err) {
+        console.error('[CommissionAudit] failed', err);
         res.status(500).json({ message: err.message });
     }
 });
