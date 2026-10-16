@@ -46,6 +46,10 @@ const orderSchema = new mongoose.Schema({
     guestSessionId: { type: String, index: true, default: null },
 
     providerReference: { type: String, index: true },
+    // Atomic guard: prevents duplicate automated fulfilment submissions for the same order.
+    providerSubmissionStarted: { type: Boolean, default: false },
+    // Reconciled/ambiguous payments must be manually fulfilled even if later paid.
+    manualFulfilmentRequired: { type: Boolean, default: false },
     providerOrderId: String,
     lastStatusUpdate: Date,
     transactionId: { type: String, index: true, sparse: true },
