@@ -41,10 +41,12 @@ const paymentTransactionSchema = new mongoose.Schema({
     // forUnverifiedNumbers: true on the Provider (if one is configured).
     isUnverified: { type: Boolean, default: false },
 
-    // Atomic mutex flag — set to true when createPaidOrderRecords begins.
-    // Prevents concurrent status polls from creating duplicate orders.
-    // Unlike orderId (ObjectId), this is a plain Boolean so no cast errors.
+    // Atomic mutex shared by pending-record creation and paid-order creation.
     orderCreating: { type: Boolean, default: false },
+
+    // Set when an attempt has remained inconclusive long enough for manual
+    // reconciliation. Even if later confirmed paid, do not auto-route it.
+    manualReconciliationRequired: { type: Boolean, default: false },
 
     // Timestamps
     initiatedAt: { type: Date, default: Date.now },
