@@ -2219,13 +2219,25 @@ app.get('/api/commissions/my', auth, async (req, res) => {
 });
 
 // ── Admin: searchable commission ledger. Historical fields remain null when unavailable. ──
+
 app.get('/api/admin/commissions', auth, admin, async (req, res) => {
     try {
-        const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 250, 1), 1000);
+        const limit = Math.min(
+            Math.max(parseInt(req.query.limit, 10) || 250, 1),
+            1000
+        );
+
         const filter = {};
-        if (req.query.status && req.query.status !== 'all') filter.status = req.query.status;
+
+        if (req.query.status && req.query.status !== 'all') {
+            filter.status = req.query.status;
+        }
+
         if (req.query.userId) filter.userId = req.query.userId;
-        if (req.query.source && req.query.source !== 'all') filter.source = req.query.source;
+
+        if (req.query.source && req.query.source !== 'all') {
+            filter.source = req.query.source;
+        }
 
         let records = await Commission.find(filter)
             .populate('userId', 'username email')
@@ -2233,34 +2245,95 @@ app.get('/api/admin/commissions', auth, admin, async (req, res) => {
             .limit(limit)
             .lean();
 
-        const search = String(req.query.search || '').trim().toLowerCase();
+        const search = String(req.query.search || '')
+            .trim()
+            .toLowerCase();
+
         if (search) {
             records = records.filter((r) => {
                 const values = [
-                    r.userId?.username, r.userId?.email, r.storeSlug, r.clientType,
-                    r.provider, r.packageName, r.paymentTransactionId, r.gatewayTransactionId,
-                    r.orderId?.toString(), r.sourceId?.toString(), r.description, r.status
+                    r.userId?.username,
+                    r.userId?.email,
+                    r.storeSlug,
+                    r.clientType,
+                    r.provider,
+                    r.packageName,
+                    r.paymentTransactionId,
+                    r.gatewayTransactionId,
+                    r.orderId?.toString(),
+                    r.sourceId?.toString(),
+                    r.description,
+                    r.status
                 ];
-                return values.some(v => String(v ?? '').toLowerCase().includes(search));
+
+                return values.some(v =>
+                    String(v ?? '').toLowerCase().includes(search)
+                );
             });
         }
 
+        // Keep commission totals based on commission records.
         const summary = records.reduce((acc, r) => {
             const amount = Number(r.amount || 0);
-            acc.totalRecorded += amount;
-            if (r.status === 'available') acc.available += amount;
-            if (r.status === 'pending') acc.pending += amount;
-            if (r.status === 'withdrawn') acc.withdrawn += amount;
-            if (r.auditStatus === 'needs-investigation') acc.needsInvestigation += 1;
-            return acc;
-        }, { totalRecorded: 0, available: 0, pending: 0, withdrawn: 0, needsInvestigation: 0 });
-        Object.keys(summary).filter(k => k !== 'needsInvestigation').forEach(k => summary[k] = Number(summary[k].toFixed(2)));
 
-        res.json({ total: records.length, limit, summary, commissions: records });
+            acc.totalRecorded += amount;
+
+            if (r.status === 'available') {
+                acc.available += amount;
+            }
+
+            if (r.status === 'pending') {
+                acc.pending += amount;
+            }
+
+            if (r.auditStatus === 'needs-investigation') {
+                acc.needsInvestigation += 1;
+            }
+
+            return acc;
+        }, {
+            totalRecorded: 0,
+            available: 0,
+            pending: 0,
+            withdrawn: 0,
+            needsInvestigation: 0
+        });
+
+        // Withdrawn is based on actual approved withdrawal requests.
+        // Do not limit this query to the commission ledger's current page.
+        const approvedWithdrawals = await Withdrawal.find({
+            status: { $regex: /^approved$/i }
+        }).select('amount').lean();
+
+        summary.withdrawn = approvedWithdrawals.reduce((total, withdrawal) => {
+            const amount = Number(withdrawal.amount || 0);
+
+            return total + (
+                Number.isFinite(amount) && amount > 0 ? amount : 0
+            );
+        }, 0);
+
+        Object.keys(summary)
+            .filter(k => k !== 'needsInvestigation')
+            .forEach(k => {
+                summary[k] = Number(summary[k].toFixed(2));
+            });
+
+        res.json({
+            total: records.length,
+            limit,
+            summary,
+            commissions: records
+        });
     } catch (err) {
-        res.status(500).json({ message: err.message });
+        console.error('Admin commission ledger error:', err);
+
+        res.status(500).json({
+            message: err.message
+        });
     }
 });
+
 
 // ── Admin: compare confirmed payments with commission ledger; this endpoint never credits balances. ──
 app.get('/api/admin/commission-audit', auth, admin, async (req, res) => {
