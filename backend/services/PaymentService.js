@@ -605,10 +605,13 @@ class PaymentService {
 
             console.log('🌐 [PaymentService] Querying Moolre status', { url, id: body.id });
 
+            // Bound gateway latency so a single status check cannot consume the
+            // entire scheduled reconciliation invocation.
             const response = await fetch(url, {
                 method:  'POST',
                 headers: headers,
                 body:    JSON.stringify(body),
+                signal:  AbortSignal.timeout(8000),
             });
 
             const rawText = await response.text();
