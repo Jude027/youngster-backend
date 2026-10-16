@@ -4968,7 +4968,7 @@ app.get('/api/cron/update-order-status', async (req, res) => {
 
         const attempts = await PaymentTransaction.find(paymentReconciliationQuery())
             .sort({ initiatedAt: 1 })
-            .limit(50);
+            .limit(5);
 
         let reconciled = 0;
         let pending = 0;
@@ -5024,7 +5024,7 @@ app.get('/api/cron/update-order-status', async (req, res) => {
         const linkedSuccesses = await PaymentTransaction.find({
             status: 'success',
             orderId: { $exists: true, $ne: null }
-        }).sort({ completedAt: -1, initiatedAt: -1 }).limit(100);
+        }).sort({ completedAt: -1, initiatedAt: -1 }).limit(10);
 
         for (const txn of linkedSuccesses) {
             try {
