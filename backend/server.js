@@ -1598,8 +1598,6 @@ app.get('/api/orders', async (req, res) => {
 
         let query = {};
         if (userId) {
-            // Fetch orders belonging to this dealer — either directly (wallet orders)
-            // or placed on their storefront (storeSlug orders)
             const allStoreSettings = await StoreSettings.find({ userId }).lean();
             const storeSlugs = allStoreSettings.map(s => s.storeSlug).filter(Boolean);
             query = storeSlugs.length
@@ -1609,8 +1607,9 @@ app.get('/api/orders', async (req, res) => {
             query = { storeSlug: req.query.storeSlug };
         }
 
-        const orders = await Order.find(query).sort({ created: -1 });
-        res.json(orders);
+        const orders = await Order.find(query).sort({ created: -1 }).limit(200).lean();
+        const { current } = await splitOrdersAtReconciliationCutoff(orders);
+        res.json(current.slice(0, 50));
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
@@ -1783,14 +1782,15 @@ app.get('/api/guest/orders', async (req, res) => {
         if (!guestSessionId || !store) {
             return res.status(400).json({ error: 'guestSessionId and store are required' });
         }
-        // Only return orders that have an actual guestSessionId match.
-        // Never return orders where guestSessionId is null — those are legacy
-        // records that would leak other customers' orders.
+        // Only return orders for this guest session; historical attempts are
+        // filtered by original payment initiation time where available.
         const orders = await Order.find({
             guestSessionId: { $eq: guestSessionId, $ne: null, $exists: true },
             storeSlug: store
-        }).sort({ created: -1 }).limit(50).lean();
-        res.json(orders);
+        }).sort({ created: -1 }).limit(200).lean();
+
+        const { current } = await splitOrdersAtReconciliationCutoff(orders);
+        res.json(current.slice(0, 50));
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -2886,7 +2886,12 @@ app.get('/api/admin/orders', auth, admin, async (req, res) => {
             return obj;
         });
 
-        res.json(enriched);
+        const { current, historical, cutoff } = await splitOrdersAtReconciliationCutoff(enriched);
+        const view = req.query.view === 'history' ? 'history' : 'current';
+        const selected = view === 'history' ? historical : current;
+
+        res.set('X-Order-View-Cutoff', cutoff.toISOString());
+        res.json(selected);
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
@@ -4605,11 +4610,9 @@ app.get('/api/user/orders', auth, async (req, res) => {
             ? { $or: [{ userId: req.user.id }, { storeSlug: { $in: storeSlugs } }] }
             : { userId: req.user.id };
 
-        const orders = await Order.find(query)
-            .sort({ created: -1 })
-            .limit(50);
-
-        res.json(orders);
+        const orders = await Order.find(query).sort({ created: -1 }).limit(200).lean();
+        const { current } = await splitOrdersAtReconciliationCutoff(orders);
+        res.json(current.slice(0, 50));
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
@@ -4799,9 +4802,64 @@ app.get('/api/webhooks/xpresportal', handleXpresPortalWebhook);
 // manual fulfilment so a late status response cannot trigger duplicate routing.
 const PAYMENT_RECONCILIATION_GRACE_MS = 10 * 60 * 1000;
 
+// Clean-start boundary for the new payment reconciliation workflow.
+// Ghana uses UTC+00:00, so midnight on 17 October 2026 is represented by Z.
+const DEFAULT_PAYMENT_RECONCILIATION_START_AT = '2026-10-17T00:00:00.000Z';
+
+function getPaymentReconciliationCutoff() {
+    const configured = process.env.PAYMENT_RECONCILIATION_START_AT || DEFAULT_PAYMENT_RECONCILIATION_START_AT;
+    const parsed = new Date(configured);
+    return Number.isNaN(parsed.getTime())
+        ? new Date(DEFAULT_PAYMENT_RECONCILIATION_START_AT)
+        : parsed;
+}
+
+// Classify orders using the original payment initiation time when available.
+// This prevents a historical payment attempt reconciled today from appearing
+// as a new order just because its Order record was created today.
+async function splitOrdersAtReconciliationCutoff(orders) {
+    const cutoff = getPaymentReconciliationCutoff();
+    const transactionIds = [...new Set(
+        orders.map(order => order.transactionId).filter(Boolean)
+    )];
+
+    let paymentAttemptByTransactionId = new Map();
+    if (transactionIds.length) {
+        const paymentAttempts = await PaymentTransaction.find(
+            { transactionId: { $in: transactionIds } },
+            { transactionId: 1, initiatedAt: 1 }
+        ).lean();
+
+        paymentAttemptByTransactionId = new Map(
+            paymentAttempts.map(txn => [txn.transactionId, txn])
+        );
+    }
+
+    const current = [];
+    const historical = [];
+
+    for (const order of orders) {
+        const linkedAttempt = order.transactionId
+            ? paymentAttemptByTransactionId.get(order.transactionId)
+            : null;
+
+        // If a linked payment attempt exists but has no initiation timestamp,
+        // classify it as historical/uncertain rather than assuming it is new.
+        const effectiveDate = linkedAttempt
+            ? linkedAttempt.initiatedAt
+            : order.created;
+        const isCurrent = effectiveDate && new Date(effectiveDate).getTime() >= cutoff.getTime();
+
+        (isCurrent ? current : historical).push(order);
+    }
+
+    return { current, historical, cutoff };
+}
+
 function paymentReconciliationQuery(now = new Date()) {
     const staleBefore = new Date(now.getTime() - PAYMENT_RECONCILIATION_GRACE_MS);
     return {
+        initiatedAt: { $gte: getPaymentReconciliationCutoff() },
         $or: [
             {
                 status: { $in: ['success', 'failed', 'cancelled'] },
