@@ -572,8 +572,14 @@ async function recordOrderCommission({ userId, order, paymentTransaction, transa
     return commission;
 }
 
-async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentTransaction.paymentGateway) {
+async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentTransaction.paymentGateway, _retriedAfterClaim = false) {
     if (!paymentTransaction) return null;
+
+    // This function is the fulfilment path: never create a Processing order
+    // or submit to a provider unless the gateway status is confirmed success.
+    if (paymentTransaction.status !== 'success') {
+        return ensurePaymentAttemptRecords(paymentTransaction);
+    }
 
     const txId = paymentTransaction.transactionId || paymentTransaction._id?.toString();
     console.log('[PaidOrder] createPaidOrderRecords called', {
@@ -582,6 +588,36 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
         status: paymentTransaction.status,
     });
 
+    // Claim before checking either orderId or transactionId. This serializes
+    // repairs of existing orders too, preventing duplicate Transaction rows.
+    const claimed = await PaymentTransaction.findOneAndUpdate(
+        {
+            transactionId: paymentTransaction.transactionId,
+            $or: [
+                { orderCreating: { $exists: false } },
+                { orderCreating: false }
+            ]
+        },
+        { $set: { orderCreating: true } },
+        { new: false }
+    );
+
+    if (!claimed) {
+        await new Promise(resolve => setTimeout(resolve, 900));
+        const latest = await PaymentTransaction.findOne({
+            transactionId: paymentTransaction.transactionId
+        });
+        const created = latest?.orderId
+            ? await Order.findById(latest.orderId)
+            : await Order.findOne({ transactionId: paymentTransaction.transactionId });
+
+        if (latest?.status === 'success' && !_retriedAfterClaim) {
+            return createPaidOrderRecords(latest, gatewayName, true);
+        }
+        return created?._id || null;
+    }
+
+    try {
     // ── Duplicate guard ───────────────────────────────────────────────────────
     // Skip if orderId is already a real ObjectId (order was fully created).
     if (paymentTransaction.orderId && paymentTransaction.orderId !== 'CREATING') {
@@ -590,9 +626,28 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
             orderId: paymentTransaction.orderId?.toString()
         });
         if (existingOrder) {
+            // A pending placeholder becomes eligible for fulfilment only after
+            // the PaymentTransaction is definitively successful.
+            const wasPendingPlaceholder = existingOrder.status === 'Pending';
+            const manualFulfilmentRequired = Boolean(
+                paymentTransaction.manualReconciliationRequired ||
+                existingOrder.manualFulfilmentRequired
+            );
+            if (manualFulfilmentRequired && !existingOrder.manualFulfilmentRequired) {
+                existingOrder.manualFulfilmentRequired = true;
+                await existingOrder.save();
+            }
+            if (paymentTransaction.status === 'success' &&
+                !manualFulfilmentRequired &&
+                existingOrder.status !== 'Processing' &&
+                existingOrder.status !== 'Completed') {
+                existingOrder.status = 'Processing';
+                await existingOrder.save();
+            }
+
             // Ensure a Transaction record exists for this order — if it was missed
             // on the first run (e.g. due to a race or error), create it now.
-            const existingTx = await Transaction.findOne({ orderId: existingOrder._id });
+            let existingTx = await Transaction.findOne({ orderId: existingOrder._id });
             if (!existingTx) {
                 const fallbackUserId = paymentTransaction.userId || existingOrder.userId;
                 const fallbackStoreSlug = paymentTransaction.storeSlug
@@ -609,7 +664,7 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
                         balance_before: 0,
                         amount: paymentTransaction.totalAmount || paymentTransaction.amount,
                         method: 'Mobile Money',
-                        status: 'Completed',
+                        status: manualFulfilmentRequired ? 'Pending' : 'Completed',
                         orderId: existingOrder._id,
                         guestSessionId: paymentTransaction.metadata?.guestSessionId || null,
                         created: new Date(),
@@ -620,10 +675,13 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
                 } catch (txErr) {
                     console.error('[PaidOrder] Failed to create late Transaction record:', txErr.message);
                 }
+            } else if (existingTx && existingTx.status !== 'Completed' && !manualFulfilmentRequired) {
+                existingTx.status = 'Completed';
+                await existingTx.save();
             }
 
             // If the order was created but never submitted to the provider, do it now.
-            if (!existingOrder.providerReference && existingOrder.status === 'Processing') {
+            if (wasPendingPlaceholder && !manualFulfilmentRequired && !existingOrder.providerReference && existingOrder.status === 'Processing') {
                 const resolvedBeneficiaryEx = paymentTransaction.metadata?.beneficiary || paymentTransaction.phoneNumber;
                 const resolvedPackageNameEx = resolvePaymentPackageName(paymentTransaction);
                 const resolvedProviderEx = paymentTransaction.metadata?.orderProvider
@@ -634,7 +692,7 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
                     resolvedProvider: resolvedProviderEx,
                     isUnverified: Boolean(paymentTransaction.isUnverified || paymentTransaction.metadata?.isUnverified)
                 });
-                submitOrderToProvider(existingOrder, {
+                submitPaidOrderOnce(existingOrder, paymentTransaction, {
                     phoneNumber: resolvedBeneficiaryEx,
                     packageName: resolvedPackageNameEx,
                     capacity: deriveCapacity(resolvedPackageNameEx),
@@ -672,12 +730,34 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
 
     // Check by transactionId — catches the race where orderId isn't stamped yet.
     // Skip if orderId is the 'CREATING' sentinel — that means we're mid-creation.
-    const existingByTxn = await Order.findOne({ transactionId: paymentTransaction.transactionId });
+    let existingByTxn = await Order.findOne({ transactionId: paymentTransaction.transactionId });
+    if (!existingByTxn) {
+        existingByTxn = await Order.findOne({
+            report: { $regex: paymentTransaction.transactionId }
+        });
+    }
     if (existingByTxn) {
         console.log('[PaidOrder] Order already exists for transactionId — checking for missing Transaction record', {
             transactionId: paymentTransaction.transactionId,
             existingOrderId: existingByTxn._id
         });
+
+        const wasPendingPlaceholder = existingByTxn.status === 'Pending';
+        const manualFulfilmentRequired = Boolean(
+            paymentTransaction.manualReconciliationRequired ||
+            existingByTxn.manualFulfilmentRequired
+        );
+        if (manualFulfilmentRequired && !existingByTxn.manualFulfilmentRequired) {
+            existingByTxn.manualFulfilmentRequired = true;
+            await existingByTxn.save();
+        }
+        if (paymentTransaction.status === 'success' &&
+            !manualFulfilmentRequired &&
+            existingByTxn.status !== 'Processing' &&
+            existingByTxn.status !== 'Completed') {
+            existingByTxn.status = 'Processing';
+            await existingByTxn.save();
+        }
 
         // Create Transaction record if it was never saved (PaymentService auto-create
         // only creates the Order, not the Transaction).
@@ -698,7 +778,7 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
                     balance_before: 0,
                     amount: paymentTransaction.totalAmount || paymentTransaction.amount,
                     method: 'Mobile Money',
-                    status: 'Completed',
+                    status: manualFulfilmentRequired ? 'Pending' : 'Completed',
                     orderId: existingByTxn._id,
                     guestSessionId: paymentTransaction.metadata?.guestSessionId || null,
                     created: new Date(),
@@ -711,10 +791,13 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
             } catch (txErr) {
                 console.error('[PaidOrder] Failed to create Transaction record:', txErr.message);
             }
+        } else if (existingTx && existingTx.status !== 'Completed' && !manualFulfilmentRequired) {
+            existingTx.status = 'Completed';
+            await existingTx.save();
         }
 
         // Submit to provider if not yet done
-        if (!existingByTxn.providerReference && existingByTxn.status === 'Processing') {
+        if (wasPendingPlaceholder && !manualFulfilmentRequired && !existingByTxn.providerReference && existingByTxn.status === 'Processing') {
             const resolvedBeneficiaryEx = paymentTransaction.metadata?.beneficiary || paymentTransaction.phoneNumber;
             const resolvedPackageNameEx = resolvePaymentPackageName(paymentTransaction);
             const resolvedProviderEx = paymentTransaction.metadata?.orderProvider
@@ -723,7 +806,7 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
             console.log('[PaidOrder] Submitting existing order to provider', {
                 orderId: existingByTxn._id.toString(), resolvedProviderEx
             });
-            submitOrderToProvider(existingByTxn, {
+            submitPaidOrderOnce(existingByTxn, paymentTransaction, {
                 phoneNumber: resolvedBeneficiaryEx,
                 packageName: resolvedPackageNameEx,
                 capacity: deriveCapacity(resolvedPackageNameEx),
@@ -736,31 +819,9 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
             }).catch(err => console.error('[PaidOrder] Provider submission failed:', err.message));
         }
 
+        paymentTransaction.orderId = existingByTxn._id;
+        await paymentTransaction.save();
         return existingByTxn._id;
-    }
-
-    // Atomically claim this transaction so concurrent calls can't both pass.
-    // Uses a dedicated boolean flag 'orderCreating' so we don't corrupt the
-    // orderId field (which is typed as ObjectId and rejects string sentinels).
-    const claimed = await PaymentTransaction.findOneAndUpdate(
-        {
-            transactionId: paymentTransaction.transactionId,
-            $or: [
-                { orderCreating: { $exists: false } },
-                { orderCreating: false }
-            ]
-        },
-        { $set: { orderCreating: true } },
-        { new: false }
-    );
-    console.log('[PaidOrder] Claim result:', claimed ? 'claimed OK' : 'ALREADY CLAIMED — skipping', {
-        transactionId: paymentTransaction.transactionId
-    });
-    if (!claimed) {
-        // Another call already claimed it — wait briefly then return the created order
-        await new Promise(r => setTimeout(r, 800));
-        const created = await Order.findOne({ transactionId: paymentTransaction.transactionId });
-        return created?._id || null;
     }
 
     const userId = await resolvePaymentUserId(paymentTransaction);
@@ -839,14 +900,15 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
         price: paymentTransaction.amount,
         balanceBefore,
         balanceAfter: balanceBefore,
-        status: 'Processing',
+        status: paymentTransaction.manualReconciliationRequired ? 'Pending' : 'Processing',
         transactionId: paymentTransaction.transactionId,
         report: orderReport,
         isUnverified: Boolean(paymentTransaction.isUnverified || paymentTransaction.metadata?.isUnverified),
+        manualFulfilmentRequired: Boolean(paymentTransaction.manualReconciliationRequired),
     });
     await order.save();
 
-    submitOrderToProvider(order, {
+    submitPaidOrderOnce(order, paymentTransaction, {
         phoneNumber: resolvedBeneficiary,
         packageName: resolvedPackageName,
         capacity: deriveCapacity(resolvedPackageName),
@@ -866,7 +928,7 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
         balance_before: balanceBefore,
         amount: paymentTransaction.totalAmount || paymentTransaction.amount,
         method: 'Mobile Money',
-        status: 'Completed',
+        status: paymentTransaction.manualReconciliationRequired ? 'Pending' : 'Completed',
         orderId: order._id,
         guestSessionId: paymentTransaction.metadata?.guestSessionId || null,
         created: new Date()
@@ -908,6 +970,243 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
     });
 
     return order._id;
+    } finally {
+        await PaymentTransaction.updateOne(
+            { transactionId: paymentTransaction.transactionId },
+            { $set: { orderCreating: false } }
+        ).catch(err => console.error('[PaidOrder] Could not release creation lock:', err.message));
+    }
+}
+
+
+// Ensure every payment attempt has visible Order + Transaction records without
+// treating an unconfirmed payment as paid. Successful payments are delegated to
+// createPaidOrderRecords(), the single paid-order creation path.
+async function ensurePaymentAttemptRecords(paymentTransaction) {
+    if (!paymentTransaction?.transactionId) return null;
+
+    const txn = await PaymentTransaction.findOne({
+        transactionId: paymentTransaction.transactionId
+    });
+    if (!txn) return null;
+
+    if (txn.status === 'success') {
+        return createPaidOrderRecords(txn, txn.paymentGateway);
+    }
+
+    const isFailed = ['failed', 'cancelled'].includes(
+        String(txn.status || '').toLowerCase()
+    );
+    const orderStatus = txn.status === 'cancelled'
+        ? 'Cancelled/Refunded'
+        : isFailed ? 'Failed' : 'Pending';
+    const transactionStatus = isFailed ? 'Failed' : 'Pending';
+
+    let order = null;
+    if (txn.orderId && mongoose.Types.ObjectId.isValid(String(txn.orderId))) {
+        order = await Order.findById(txn.orderId);
+    }
+    if (!order) {
+        order = await Order.findOne({ transactionId: txn.transactionId });
+    }
+    if (!order) {
+        // Legacy webhook orders may only contain the local payment reference
+        // in the report field; reuse them rather than creating duplicates.
+        order = await Order.findOne({ report: { $regex: txn.transactionId } });
+    }
+
+    // A previously completed/processing record must never be downgraded by a
+    // delayed "pending" response. Only definitive failure can update a pending
+    // placeholder to Failed.
+    if (order) {
+        if (txn.manualReconciliationRequired && !order.manualFulfilmentRequired) {
+            order.manualFulfilmentRequired = true;
+            await order.save();
+        }
+        if (txn.status !== 'success') {
+            if (isFailed && ['Pending', 'Processing'].includes(order.status)) {
+                order.status = orderStatus;
+                await order.save();
+            }
+        }
+
+        let transaction = await Transaction.findOne({ orderId: order._id });
+        if (!transaction) {
+            transaction = await Transaction.create({
+                userId: txn.userId || order.userId || null,
+                storeSlug: txn.storeSlug || txn.metadata?.storeSlug || order.storeSlug || null,
+                clientType: txn.clientType || txn.metadata?.clientType || order.clientType || '',
+                beneficiary_phone: txn.phoneNumber || order.phoneNumber || '',
+                description: `${isFailed ? 'FAILED: ' : ''}${txn.provider || order.providerName || 'Bundle'} Bundle Purchase - ${txn.metadata?.beneficiary || txn.phoneNumber || order.beneficiary || ''}`,
+                balance_before: 0,
+                amount: txn.totalAmount || txn.amount || order.amount || 0,
+                method: 'Mobile Money',
+                status: transactionStatus,
+                orderId: order._id,
+                guestSessionId: txn.metadata?.guestSessionId || order.guestSessionId || null,
+                created: txn.initiatedAt || new Date()
+            });
+        } else if (isFailed && transaction.status === 'Pending') {
+            transaction.status = 'Failed';
+            await transaction.save();
+        }
+
+        if (!txn.orderId || String(txn.orderId) !== String(order._id)) {
+            txn.orderId = order._id;
+            await txn.save();
+        }
+        return order._id;
+    }
+
+    // Use the same atomic mutex as paid-order creation so polling, webhooks and
+    // the scheduled reconciler cannot create two placeholders concurrently.
+    const claim = await PaymentTransaction.findOneAndUpdate(
+        {
+            transactionId: txn.transactionId,
+            $or: [
+                { orderCreating: { $exists: false } },
+                { orderCreating: false }
+            ]
+        },
+        { $set: { orderCreating: true } },
+        { new: false }
+    );
+
+    if (!claim) {
+        await new Promise(resolve => setTimeout(resolve, 900));
+        const latest = await PaymentTransaction.findOne({ transactionId: txn.transactionId });
+        if (latest?.status === 'success') {
+            return createPaidOrderRecords(latest, latest.paymentGateway);
+        }
+        const racedOrder = latest?.orderId
+            ? await Order.findById(latest.orderId)
+            : await Order.findOne({ transactionId: txn.transactionId });
+        return racedOrder?._id || null;
+    }
+
+    try {
+        // Recheck after acquiring the lock.
+        const latest = await PaymentTransaction.findOne({ transactionId: txn.transactionId });
+        if (!latest) return null;
+        if (latest.status === 'success') {
+            // Release the placeholder lock before entering the paid-order path.
+            await PaymentTransaction.updateOne(
+                { transactionId: latest.transactionId },
+                { $set: { orderCreating: false } }
+            );
+            return await createPaidOrderRecords(latest, latest.paymentGateway);
+        }
+
+        const existing = await Order.findOne({ transactionId: latest.transactionId });
+        if (existing) {
+            latest.orderId = existing._id;
+            await latest.save();
+            return existing._id;
+        }
+
+        const userId = latest.userId || await resolvePaymentUserId(latest);
+        const storeSlug = latest.storeSlug || latest.metadata?.storeSlug || null;
+        const resolvedPackageName = resolvePaymentPackageName(latest);
+        const resolvedProvider = latest.metadata?.orderProvider
+            || latest.metadata?.packageProvider
+            || latest.provider;
+        const beneficiary = latest.metadata?.beneficiary || latest.phoneNumber || '';
+        const guestSessionId = latest.metadata?.guestSessionId || null;
+        const failed = ['failed', 'cancelled'].includes(String(latest.status || '').toLowerCase());
+
+        const order = await Order.create({
+            userId: userId || null,
+            storeSlug,
+            clientType: latest.clientType || latest.metadata?.clientType || 'Customers',
+            guestSessionId,
+            beneficiary,
+            phoneNumber: beneficiary,
+            package: resolvedProvider,
+            providerName: resolvedProvider,
+            packageName: resolvedPackageName,
+            bundleSize: resolvedPackageName,
+            bundle_size: resolvedPackageName,
+            amount: latest.amount,
+            price: latest.amount,
+            balanceBefore: 0,
+            balanceAfter: 0,
+            status: latest.status === 'cancelled' ? 'Cancelled/Refunded' : failed ? 'Failed' : 'Pending',
+            transactionId: latest.transactionId,
+            report: `Payment ${failed ? latest.status : 'awaiting confirmation'} via ${latest.paymentGateway || 'payment gateway'} - Reference: ${latest.transactionId}`,
+            isUnverified: Boolean(latest.isUnverified || latest.metadata?.isUnverified),
+            manualFulfilmentRequired: Boolean(latest.manualReconciliationRequired)
+        });
+
+        await Transaction.create({
+            userId: userId || null,
+            storeSlug,
+            clientType: latest.clientType || latest.metadata?.clientType || 'Customers',
+            beneficiary_phone: latest.phoneNumber || beneficiary,
+            description: `${failed ? 'FAILED: ' : 'PENDING: '}${resolvedProvider || latest.provider || 'Bundle'} Purchase - ${beneficiary}`,
+            balance_before: 0,
+            amount: latest.totalAmount || latest.amount || 0,
+            method: 'Mobile Money',
+            status: failed ? 'Failed' : 'Pending',
+            orderId: order._id,
+            guestSessionId,
+            created: latest.initiatedAt || new Date()
+        });
+
+        latest.userId = userId || latest.userId;
+        latest.storeSlug = storeSlug;
+        latest.clientType = latest.clientType || latest.metadata?.clientType || 'Customers';
+        latest.orderId = order._id;
+        await latest.save();
+
+        console.log('[PaymentRecords] Pending/failed records ensured', {
+            transactionId: latest.transactionId,
+            orderId: order._id.toString(),
+            paymentStatus: latest.status,
+            orderStatus: order.status
+        });
+        return order._id;
+    } finally {
+        await PaymentTransaction.updateOne(
+            { transactionId: txn.transactionId },
+            { $set: { orderCreating: false } }
+        ).catch(err => console.error('[PaymentRecords] Could not release creation lock:', err.message));
+    }
+}
+
+async function submitPaidOrderOnce(order, paymentTransaction, orderData) {
+    if (!order?._id ||
+        paymentTransaction?.status !== 'success' ||
+        paymentTransaction?.manualReconciliationRequired ||
+        order.manualFulfilmentRequired ||
+        order.status !== 'Processing') {
+        return { success: false, skipped: true, message: 'Payment is not confirmed or order is not eligible for fulfilment.' };
+    }
+
+    const claimedOrder = await Order.findOneAndUpdate(
+        {
+            _id: order._id,
+            providerSubmissionStarted: { $ne: true },
+            $or: [
+                { providerReference: null },
+                { providerReference: '' },
+                { providerReference: { $exists: false } }
+            ]
+        },
+        { $set: { providerSubmissionStarted: true } },
+        { new: true }
+    );
+
+    if (!claimedOrder) {
+        console.log('[ProviderSubmit] Duplicate submission prevented', {
+            orderId: String(order._id)
+        });
+        return { success: true, skipped: true, message: 'Submission already started or order already routed.' };
+    }
+
+    // Keep the claim even if the provider call returns an error: an ambiguous
+    // provider timeout must not cause automatic duplicate fulfilment. An admin
+    // can inspect and deliberately retry after reconciliation.
+    return submitOrderToProvider(claimedOrder, orderData);
 }
 
 function shouldFallbackToWhatsApp(resultOrError) {
@@ -922,6 +1221,32 @@ function shouldFallbackToWhatsApp(resultOrError) {
 }
 
 async function submitOrderToProvider(order, orderData) {
+    // Defense in depth: payment-backed orders cannot reach Universal API or
+    // WhatsApp unless the gateway confirms success and the order is Processing.
+    if (order?.transactionId) {
+        const paymentAttempt = await PaymentTransaction.findOne({
+            transactionId: order.transactionId
+        }).select('status manualReconciliationRequired').lean();
+
+        if (paymentAttempt &&
+            (paymentAttempt.status !== 'success' ||
+             order.status !== 'Processing' ||
+             paymentAttempt.manualReconciliationRequired ||
+             order.manualFulfilmentRequired)) {
+            console.warn('[ProviderSubmit] Blocked payment-backed order before confirmation', {
+                orderId: String(order._id),
+                transactionId: order.transactionId,
+                paymentStatus: paymentAttempt.status,
+                orderStatus: order.status
+            });
+            return {
+                success: false,
+                skipped: true,
+                message: 'Payment is not confirmed; automated fulfilment is blocked.'
+            };
+        }
+    }
+
     const providerName = orderData.provider || orderData.network || order.providerName || order.package;
     let result;
 
@@ -3666,6 +3991,17 @@ app.post('/api/payment/initiate', async (req, res) => {
             message: result?.message || null
         });
 
+        // Create visible Pending (or definitively Failed) Order/Transaction rows
+        // for every saved payment attempt. This never submits an order to a provider.
+        if (result?.transactionId) {
+            const paymentAttempt = await PaymentTransaction.findOne({
+                transactionId: result.transactionId
+            });
+            if (paymentAttempt) {
+                await ensurePaymentAttemptRecords(paymentAttempt);
+            }
+        }
+
         res.json(result);
     } catch (err) {
         console.error('[PaymentRoute] Payment initiation failed', err.message);
@@ -4099,10 +4435,16 @@ app.post('/api/payment/process-otp-internal', async (req, res) => {
         res.json({ ok: true });
     } catch (err) {
         console.error('❌ Internal OTP processing error:', err.message);
-        // Mark transaction so frontend polling can detect the failure
+        // An OTP/API error is not proof that payment failed. Keep the payment
+        // processing and store the diagnostic so polling/reconciliation can retry.
         await PaymentTransaction.updateOne(
             { transactionId },
-            { $set: { status: 'failed', errorMessage: err.message } }
+            {
+                $set: {
+                    errorMessage: err.message,
+                    manualReconciliationRequired: true
+                }
+            }
         ).catch(() => {});
         res.json({ ok: false, error: err.message });
     }
@@ -4117,13 +4459,28 @@ app.get('/api/payment/status/:transactionId', async (req, res) => {
         console.log('TransactionId:', txId);
 
         const result = await PaymentService.checkPaymentStatus(txId);
-        if (result.success && result.status === 'success' && result.transaction) {
-            // Reload as a live Mongoose document — result.transaction is a plain
-            // object from PaymentService and .save() / field checks won't work on it.
-            const liveTx = await PaymentTransaction.findOne({ transactionId: txId });
-            if (liveTx) {
-                await createPaidOrderRecords(liveTx, liveTx.paymentGateway);
-            }
+
+        // If the status check itself is inconclusive (network/API error or no
+        // trustworthy gateway result), preserve this order for manual review.
+        // A later success must not silently route this order to a provider.
+        const liveTx = await PaymentTransaction.findOne({ transactionId: txId });
+        const definitiveStatuses = ['success', 'failed', 'cancelled'];
+        const statusCheckInconclusive = Boolean(
+            liveTx &&
+            !definitiveStatuses.includes(String(liveTx.status || '').toLowerCase()) &&
+            (result?.success === false || result?.status === 'unknown' || result?.status === 'inconclusive')
+        );
+        if (statusCheckInconclusive && !liveTx.manualReconciliationRequired) {
+            liveTx.manualReconciliationRequired = true;
+            liveTx.errorMessage = result?.message || result?.error || liveTx.errorMessage;
+            await liveTx.save();
+        }
+
+        // Synchronize all outcomes through one idempotent record-creation path.
+        // Pending/inconclusive outcomes create/update Pending records only;
+        // success uses createPaidOrderRecords; definitive failures become Failed.
+        if (liveTx) {
+            await ensurePaymentAttemptRecords(liveTx);
         }
 
         console.log('📍 Result from checkPaymentStatus:', JSON.stringify(result, null, 2));
@@ -4174,109 +4531,29 @@ const handleWebhookCallback = async (req, res) => {
         const isSuccess = ['SUCCESS', 'Success', 'success'].includes(callbackData.status) || Number(callbackData.txstatus) === 1;
         const isFailed = ['FAILED', 'Failed', 'failed', 'FAILURE', 'failure'].includes(callbackData.status) || Number(callbackData.txstatus) === 2;
 
-        if ((isSuccess && paymentResult.success) || isFailed) {
+        if (paymentResult.success || isFailed) {
             try {
-                const paymentTransaction = await PaymentTransaction.findOne({
-                    $or: [
-                        { transactionId: callbackData.transaction_id },
-                        { transactionId: callbackData.externalref },
-                        { transactionId: callbackData.transactionid }
-                    ].filter(Boolean)
-                });
+                const paymentRef = callbackData.externalref
+                    || callbackData.transaction_id
+                    || callbackData.transactionid;
 
-                if (paymentTransaction && paymentTransaction.userId) {
-                    const user = await User.findById(paymentTransaction.userId);
-                    if (user) {
-                        const balanceBefore = user.balance || 0;
-                        const resolvedPackageName = resolvePackageName(paymentTransaction);
-                        const resolvedBeneficiary = paymentTransaction.metadata?.beneficiary || paymentTransaction.phoneNumber;
+                const paymentTransaction = paymentRef
+                    ? await PaymentTransaction.findOne({ transactionId: paymentRef })
+                    : null;
 
-                        if (isSuccess && paymentResult.success) {
-                            if (paymentTransaction.orderId) {
-                                console.log(`Payment ${callbackData.transaction_id} already has order ${paymentTransaction.orderId}`);
-                                return res.json({ success: true, message: 'Callback received' });
-                            }
-                            // Create Order record
-                            const order = new Order({
-                                userId: paymentTransaction.userId,
-                                storeSlug: paymentTransaction.storeSlug || null,
-                                beneficiary: resolvedBeneficiary,
-                                phoneNumber: resolvedBeneficiary,
-                                package: paymentTransaction.provider,
-                                providerName: paymentTransaction.provider,
-                                packageName: resolvedPackageName,
-                                bundleSize: resolvedPackageName,
-                                amount: paymentTransaction.amount,
-                                balanceBefore,
-                                balanceAfter: balanceBefore,
-                                status: 'Processing',
-                                report: `Payment via ${req.params.gatewayName} - Transaction: ${callbackData.transaction_id}`
-                            });
-                            await order.save();
-
-                            submitOrderToProvider(order, {
-                                phoneNumber: resolvedBeneficiary,
-                                packageName: resolvedPackageName,
-                                capacity: deriveCapacity(resolvedPackageName),
-                                price: paymentTransaction.amount,
-                                provider: paymentTransaction.provider,
-                                network: paymentTransaction.provider,
-                                reference: order._id.toString(),
-                                orderId: order._id
-                            }).catch(err => console.error('Provider submission failed:', err.message));
-
-                            // Create Transaction record (successful)
-                            const transaction = new Transaction({
-                                userId: paymentTransaction.userId,
-                                storeSlug: paymentTransaction.storeSlug || null,
-                                beneficiary_phone: paymentTransaction.phoneNumber,
-                                description: `${paymentTransaction.provider} Bundle Purchase - ${resolvedBeneficiary}`,
-                                balance_before: balanceBefore,
-                                amount: paymentTransaction.totalAmount || paymentTransaction.amount,
-                                method: 'Mobile Money',
-                                status: 'Completed',
-                                orderId: order._id,
-                                created: new Date()
-                            });
-                            await transaction.save();
-
-                            await recordOrderCommission({
-                                userId: paymentTransaction.userId,
-                                order,
-                                paymentTransaction,
-                                transactionRecord: transaction,
-                                gatewayName: req.params.gatewayName
-                            });
-
-                            paymentTransaction.orderId = order._id;
-                            await paymentTransaction.save();
-                            console.log(`✅ Order and Transaction created for payment ${callbackData.transaction_id}`, {
-                                orderId: order._id.toString(),
-                                transactionRecordId: transaction._id.toString(),
-                                paymentPhoneNumber: paymentTransaction.phoneNumber,
-                                beneficiaryPhoneNumber: resolvedBeneficiary
-                            });
-                        } else {
-                            // Payment failed — record a failed Transaction so dealer can see it
-                            const failedTx = new Transaction({
-                                userId: paymentTransaction.userId,
-                                storeSlug: paymentTransaction.storeSlug || null,
-                                beneficiary_phone: paymentTransaction.phoneNumber,
-                                description: `FAILED: ${paymentTransaction.provider} Bundle Purchase - ${resolvedBeneficiary}`,
-                                balance_before: balanceBefore,
-                                amount: paymentTransaction.amount,
-                                method: 'Mobile Money',
-                                status: 'failed',
-                                created: new Date()
-                            });
-                            await failedTx.save();
-                            console.log(`⚠️ Failed Transaction recorded for payment ${callbackData.transaction_id}`);
-                        }
-                    }
+                if (paymentTransaction) {
+                    // Webhook, status polling and cron all use the same idempotent
+                    // record synchronization. Never create/submit an order directly here.
+                    await ensurePaymentAttemptRecords(paymentTransaction);
+                } else {
+                    console.warn('[Webhook] No local payment attempt found for callback', {
+                        paymentRef,
+                        gateway: req.params.gatewayName
+                    });
                 }
             } catch (orderErr) {
-                console.error('Error creating order/transaction:', orderErr);
-                // Don't fail the webhook - payment is already processed
+                console.error('[Webhook] Failed to synchronize payment records:', orderErr);
+                // Keep webhook acknowledgement resilient; cron/manual reconciliation retries.
             }
         }
 
@@ -4517,29 +4794,59 @@ app.post('/api/webhooks/xpresportal', handleXpresPortalWebhook);
 app.get('/api/webhooks/xpresportal', handleXpresPortalWebhook);
 
 // ==================== PAYMENT RECONCILIATION ====================
-// Scans all successful PaymentTransactions with no linked order and creates
-// the missing order + transaction records. Run this when a customer reports
-// money was deducted but no bundle was received.
-// GET  /api/admin/reconcile-payments          — dry run (shows what would be fixed)
-// POST /api/admin/reconcile-payments          — actually fixes the records
+// One idempotent reconciliation path for successful, failed, and inconclusive
+// attempts. Pending/processing attempts older than 10 minutes are flagged for
+// manual fulfilment so a late status response cannot trigger duplicate routing.
+const PAYMENT_RECONCILIATION_GRACE_MS = 10 * 60 * 1000;
+
+function paymentReconciliationQuery(now = new Date()) {
+    const staleBefore = new Date(now.getTime() - PAYMENT_RECONCILIATION_GRACE_MS);
+    return {
+        $or: [
+            {
+                status: { $in: ['success', 'failed', 'cancelled'] },
+                $or: [
+                    { orderId: null },
+                    { orderId: { $exists: false } }
+                ]
+            },
+            {
+                status: { $in: ['pending', 'processing', 'otp_verified'] },
+                initiatedAt: { $lte: staleBefore },
+                $or: [
+                    { lastRetryAt: null },
+                    { lastRetryAt: { $exists: false } },
+                    { lastRetryAt: { $lte: staleBefore } }
+                ]
+            }
+        ]
+    };
+}
+
+// GET is a dry run only; it never creates records or changes payment status.
 app.get('/api/admin/reconcile-payments', auth, admin, async (req, res) => {
     try {
-        const orphaned = await PaymentTransaction.find({
-            status: 'success',
-            $or: [{ orderId: null }, { orderId: { $exists: false } }]
-        }).sort({ initiatedAt: -1 }).limit(100).lean();
+        const attempts = await PaymentTransaction.find(paymentReconciliationQuery())
+            .sort({ initiatedAt: 1 })
+            .limit(100)
+            .lean();
 
         res.json({
-            message: `Found ${orphaned.length} successful payment(s) with no linked order.`,
-            count: orphaned.length,
-            transactions: orphaned.map(t => ({
+            message: `Found ${attempts.length} payment attempt(s) needing reconciliation or record repair.`,
+            count: attempts.length,
+            transactions: attempts.map(t => ({
                 transactionId: t.transactionId,
+                status: t.status,
                 amount: t.amount,
+                totalAmount: t.totalAmount,
                 provider: t.provider,
                 phoneNumber: t.phoneNumber,
                 storeSlug: t.storeSlug || t.metadata?.storeSlug,
+                orderId: t.orderId || null,
+                manualReconciliationRequired: Boolean(t.manualReconciliationRequired),
                 initiatedAt: t.initiatedAt,
                 completedAt: t.completedAt,
+                lastRetryAt: t.lastRetryAt
             }))
         });
     } catch (err) {
@@ -4549,95 +4856,210 @@ app.get('/api/admin/reconcile-payments', auth, admin, async (req, res) => {
 
 app.post('/api/admin/reconcile-payments', auth, admin, async (req, res) => {
     try {
-        const orphaned = await PaymentTransaction.find({
-            status: 'success',
-            $or: [{ orderId: null }, { orderId: { $exists: false } }]
-        }).sort({ initiatedAt: -1 }).limit(100);
+        const attempts = await PaymentTransaction.find(paymentReconciliationQuery())
+            .sort({ initiatedAt: 1 })
+            .limit(100);
 
         let fixed = 0;
+        let pending = 0;
+        let failed = 0;
         let skipped = 0;
         const results = [];
 
-        for (const txn of orphaned) {
+        for (const txn of attempts) {
             try {
-                // Double-check no order was created in the meantime
-                const existingOrder = await Order.findOne({ transactionId: txn.transactionId });
-                if (existingOrder) {
-                    // Link it back
-                    txn.orderId = existingOrder._id;
+                // An explicit admin reconciliation marks an old ambiguous payment
+                // for manual fulfilment. It must never be auto-routed on late success.
+                if (['pending', 'processing', 'otp_verified'].includes(txn.status)) {
+                    txn.manualReconciliationRequired = true;
+                    txn.lastRetryAt = new Date();
+                    txn.retryCount = Number(txn.retryCount || 0) + 1;
                     await txn.save();
+
+                    // Query the gateway once. Inconclusive results remain pending.
+                    await PaymentService.checkPaymentStatus(txn.transactionId).catch(err => {
+                        console.warn('[ManualReconcile] Gateway check inconclusive:', err.message);
+                    });
+                }
+
+                const refreshed = await PaymentTransaction.findOne({
+                    transactionId: txn.transactionId
+                });
+
+                if (!refreshed) {
                     skipped++;
-                    results.push({ transactionId: txn.transactionId, status: 'already_existed', orderId: existingOrder._id });
+                    results.push({ transactionId: txn.transactionId, status: 'skipped', reason: 'Payment record disappeared' });
                     continue;
                 }
 
-                // Create the missing order and transaction records
-                const orderId = await createPaidOrderRecords(txn, txn.paymentGateway);
-                if (orderId) {
+                // Preserve manual-fulfilment marker on the corresponding order.
+                if (refreshed.orderId && refreshed.manualReconciliationRequired) {
+                    await Order.updateOne(
+                        { _id: refreshed.orderId },
+                        { $set: { manualFulfilmentRequired: true } }
+                    );
+                }
+
+                const orderId = await ensurePaymentAttemptRecords(refreshed);
+                if (!orderId) {
+                    skipped++;
+                    results.push({ transactionId: txn.transactionId, status: 'skipped', reason: 'Could not create or locate order record' });
+                    continue;
+                }
+
+                if (refreshed.status === 'success') {
                     fixed++;
-                    results.push({ transactionId: txn.transactionId, status: 'fixed', orderId });
+                    results.push({
+                        transactionId: txn.transactionId,
+                        status: 'payment_confirmed_manual_fulfilment',
+                        orderId: String(orderId)
+                    });
+                } else if (['failed', 'cancelled'].includes(refreshed.status)) {
+                    failed++;
+                    results.push({
+                        transactionId: txn.transactionId,
+                        status: 'failed_recorded',
+                        orderId: String(orderId)
+                    });
                 } else {
-                    results.push({ transactionId: txn.transactionId, status: 'failed', reason: 'Could not resolve store/user' });
+                    pending++;
+                    results.push({
+                        transactionId: txn.transactionId,
+                        status: 'still_pending',
+                        orderId: String(orderId)
+                    });
                 }
             } catch (err) {
-                results.push({ transactionId: txn.transactionId, status: 'error', reason: err.message });
+                results.push({
+                    transactionId: txn.transactionId,
+                    status: 'error',
+                    reason: err.message
+                });
             }
         }
 
         res.json({
-            message: `Reconciliation complete. Fixed: ${fixed}, Already existed: ${skipped}, Failed: ${results.filter(r => r.status === 'failed' || r.status === 'error').length}`,
-            fixed, skipped, results
+            message: `Reconciliation complete. Confirmed for manual fulfilment: ${fixed}; pending: ${pending}; failed: ${failed}; skipped: ${skipped}.`,
+            fixed,
+            pending,
+            failed,
+            skipped,
+            results
         });
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
 });
 
-// Also wire the reconciliation into the daily cron so it runs automatically
-// The cron endpoint at /api/cron/update-order-status already handles status updates.
-// Add reconciliation there too:
-
-
-// Called by Vercel Cron every 10 minutes to check pending/processing orders.
-// Secured with CRON_SECRET env var — set the same value in Vercel project settings.
-// Vercel cron config is in vercel.json.
+// Called by Vercel Cron every 10 minutes. This is the sole scheduled payment
+// reconciler; it also ensures ordinary Order/Transaction records exist for
+// inconclusive attempts. It never marks an inconclusive payment as failed.
 app.get('/api/cron/update-order-status', async (req, res) => {
     const secret = process.env.CRON_SECRET;
-    if (secret) {
-        const authHeader = req.headers['authorization'];
-        if (authHeader !== `Bearer ${secret}`) {
-            return res.status(401).json({ error: 'Unauthorized' });
-        }
+    const authHeader = req.headers['authorization'];
+    // Fail closed: never expose reconciliation publicly if the secret is missing.
+    if (!secret || authHeader !== `Bearer ${secret}`) {
+        return res.status(401).json({ error: 'Unauthorized' });
     }
 
     try {
         const { checkPendingOrders } = require('./order-status-updater');
         await checkPendingOrders();
 
-        // Auto-reconcile orphaned successful payments (money deducted but no order)
-        const orphaned = await PaymentTransaction.find({
-            status: 'success',
-            $or: [{ orderId: null }, { orderId: { $exists: false } }]
-        }).sort({ initiatedAt: -1 }).limit(50);
+        const attempts = await PaymentTransaction.find(paymentReconciliationQuery())
+            .sort({ initiatedAt: 1 })
+            .limit(50);
 
         let reconciled = 0;
-        for (const txn of orphaned) {
+        let pending = 0;
+        let failed = 0;
+        const errors = [];
+
+        for (const txn of attempts) {
             try {
-                const existing = await Order.findOne({ transactionId: txn.transactionId });
-                if (existing) {
-                    txn.orderId = existing._id;
-                    await txn.save();
-                } else {
-                    const orderId = await createPaidOrderRecords(txn, txn.paymentGateway);
-                    if (orderId) reconciled++;
+                let current = txn;
+
+                if (['pending', 'processing', 'otp_verified'].includes(current.status)) {
+                    // Old inconclusive attempts require human review if payment
+                    // later succeeds. Mark before polling to close the race.
+                    current.manualReconciliationRequired = true;
+                    current.lastRetryAt = new Date();
+                    current.retryCount = Number(current.retryCount || 0) + 1;
+                    await current.save();
+
+                    await PaymentService.checkPaymentStatus(current.transactionId);
+                    current = await PaymentTransaction.findOne({
+                        transactionId: current.transactionId
+                    });
                 }
-            } catch (_) {}
+
+                if (!current) continue;
+
+                if (current.manualReconciliationRequired && current.orderId) {
+                    await Order.updateOne(
+                        { _id: current.orderId },
+                        { $set: { manualFulfilmentRequired: true } }
+                    );
+                }
+
+                const orderId = await ensurePaymentAttemptRecords(current);
+                if (orderId) {
+                    if (current.status === 'success') reconciled++;
+                    else if (['failed', 'cancelled'].includes(current.status)) failed++;
+                    else pending++;
+                }
+            } catch (err) {
+                errors.push({
+                    transactionId: txn.transactionId,
+                    message: err.message
+                });
+                console.error('[Cron] Payment reconciliation failed:', txn.transactionId, err.message);
+            }
+        }
+
+        // Repair successful payments that already point to an order but are
+        // missing the ordinary Transaction record or commission ledger entry.
+        // Mark these as manual fulfilment before repair so a repair cannot
+        // accidentally resubmit an older order to the provider.
+        const linkedSuccesses = await PaymentTransaction.find({
+            status: 'success',
+            orderId: { $exists: true, $ne: null }
+        }).sort({ completedAt: -1, initiatedAt: -1 }).limit(100);
+
+        for (const txn of linkedSuccesses) {
+            try {
+                const order = await Order.findById(txn.orderId);
+                if (!order) continue;
+
+                const ordinaryTransaction = await Transaction.findOne({ orderId: order._id });
+                const commission = (txn.userId || order.userId)
+                    ? await Commission.findOne({ source: 'order', sourceId: order._id })
+                    : true;
+
+                if (!ordinaryTransaction || !commission) {
+                    txn.manualReconciliationRequired = true;
+                    await txn.save();
+                    order.manualFulfilmentRequired = true;
+                    await order.save();
+
+                    await ensurePaymentAttemptRecords(txn);
+                    reconciled++;
+                }
+            } catch (err) {
+                errors.push({
+                    transactionId: txn.transactionId,
+                    message: `Linked-record repair failed: ${err.message}`
+                });
+            }
         }
 
         res.json({
             success: true,
-            message: 'Order status check and reconciliation completed',
+            message: 'Order status check and payment reconciliation completed',
             reconciled,
+            pending,
+            failed,
+            errors,
             timestamp: new Date().toISOString()
         });
     } catch (err) {
