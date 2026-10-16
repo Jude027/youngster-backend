@@ -34,7 +34,9 @@ async function checkPendingOrders() {
                 { status: { $regex: '^pending$', $options: 'i' } },
                 { status: { $regex: '^processing$', $options: 'i' } }
             ],
-            created: { $gte: cutoffAge, $lte: cutoffStale }
+            created: { $gte: cutoffAge, $lte: cutoffStale },
+            // Manually handled payment attempts must never be polled through a provider.
+            manualFulfilmentRequired: { $ne: true }
         })
             .sort({ created: -1 })
             .limit(MAX_ORDERS_PER_CYCLE)
@@ -57,6 +59,13 @@ async function checkPendingOrders() {
 }
 
 async function checkAndUpdateOrder(order) {
+    // Defense in depth: manually handled payment orders stay entirely outside
+    // Universal API status polling until an administrator changes their workflow.
+    if (order?.manualFulfilmentRequired) {
+        console.log(`[OrderStatusUpdater] Skipping ${order._id} | manual fulfilment required`);
+        return;
+    }
+
     // Get the ProviderAPILog for this order — has providerName + apiReference
     const log = await ProviderAPILog.findOne({
         orderId: order._id
