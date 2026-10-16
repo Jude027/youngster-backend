@@ -19,7 +19,7 @@ const POLL_INTERVAL_MS   = Number(process.env.ORDER_STATUS_POLL_INTERVAL_MS || 1
 const MAX_ORDER_AGE_HOURS = Number(process.env.ORDER_STATUS_MAX_AGE_HOURS || 168);
 const STALE_SECONDS       = 30;            // Only check orders pending for at least 30 sec
 const RETRY_AFTER_SECONDS  = Number(process.env.ORDER_STATUS_RETRY_AFTER_SECONDS || 10 * 60);
-const MAX_ORDERS_PER_CYCLE = Number(process.env.ORDER_STATUS_MAX_PER_CYCLE || 20);
+const MAX_ORDERS_PER_CYCLE = Number(process.env.ORDER_STATUS_MAX_PER_CYCLE || 5);
 
 // ── Main polling function ─────────────────────────────────────────────────────
 async function checkPendingOrders() {
