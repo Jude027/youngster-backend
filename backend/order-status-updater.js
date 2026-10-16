@@ -20,21 +20,38 @@ const MAX_ORDER_AGE_HOURS = Number(process.env.ORDER_STATUS_MAX_AGE_HOURS || 168
 const STALE_SECONDS       = 30;            // Only check orders pending for at least 30 sec
 const RETRY_AFTER_SECONDS  = Number(process.env.ORDER_STATUS_RETRY_AFTER_SECONDS || 10 * 60);
 const MAX_ORDERS_PER_CYCLE = Number(process.env.ORDER_STATUS_MAX_PER_CYCLE || 5);
+const DEFAULT_PAYMENT_RECONCILIATION_START_AT = '2026-10-17T00:00:00.000Z';
+
+function getOperationalStartDate() {
+    const parsed = new Date(
+        process.env.PAYMENT_RECONCILIATION_START_AT || DEFAULT_PAYMENT_RECONCILIATION_START_AT
+    );
+    return Number.isNaN(parsed.getTime())
+        ? new Date(DEFAULT_PAYMENT_RECONCILIATION_START_AT)
+        : parsed;
+}
+
 
 // ── Main polling function ─────────────────────────────────────────────────────
 async function checkPendingOrders() {
     try {
         const cutoffAge  = new Date(Date.now() - MAX_ORDER_AGE_HOURS * 60 * 60 * 1000);
         const cutoffStale = new Date(Date.now() - STALE_SECONDS * 1000);
+        const operationalStart = getOperationalStartDate();
+        const effectiveCreatedCutoff = new Date(Math.max(
+            cutoffAge.getTime(),
+            operationalStart.getTime()
+        ));
 
-        // Find orders that are still pending/processing and not too old
+        // Find orders that are still pending/processing, created after the
+        // clean-start boundary, and not too old.
         // Use case-insensitive matching for status values to handle 'pending', 'Pending', 'PENDING', etc.
         const pendingOrders = await Order.find({
             $or: [
                 { status: { $regex: '^pending$', $options: 'i' } },
                 { status: { $regex: '^processing$', $options: 'i' } }
             ],
-            created: { $gte: cutoffAge, $lte: cutoffStale },
+            created: { $gte: effectiveCreatedCutoff, $lte: cutoffStale },
             // Manually handled payment attempts must never be polled through a provider.
             manualFulfilmentRequired: { $ne: true }
         })
