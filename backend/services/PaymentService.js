@@ -28,6 +28,7 @@ class PaymentService {
      * Initiate a payment transaction
      */
     static async initiatePayment(gatewayName, paymentData) {
+        let createdTransactionId = null;
         try {
             console.log('\n' + '='.repeat(80));
             console.log('💳 PAYMENT INITIATION START', {
@@ -67,6 +68,7 @@ class PaymentService {
 
             // Unique transaction reference
             const transactionId = `TRX-${Date.now()}-${Math.random().toString(36).substr(2, 9).toUpperCase()}`;
+            createdTransactionId = transactionId;
             console.log('📋 Transaction ID:', { transactionId, totalAmount, transactionFee });
 
             // Save pending transaction record
@@ -149,8 +151,15 @@ class PaymentService {
             console.log('='.repeat(80) + '\n');
             return {
                 success: false,
-                message: error.message,
-                error:   error.toString()
+                // If the PaymentTransaction was already saved, return its reference
+                // so the caller can expose Pending records and reconciliation can
+                // query the gateway instead of losing track of an ambiguous result.
+                transactionId: createdTransactionId,
+                status: createdTransactionId ? 'processing' : undefined,
+                message: createdTransactionId
+                    ? 'Payment initiation could not be conclusively confirmed. Please do not retry immediately; this attempt is being tracked for reconciliation.'
+                    : error.message,
+                error: error.toString()
             };
         }
     }
@@ -498,7 +507,7 @@ class PaymentService {
             });
 
             // Already finalised — return immediately
-            if (transaction.status === 'success' || transaction.status === 'failed') {
+            if (transaction.status === 'success' || transaction.status === 'failed' || transaction.status === 'cancelled') {
                 return { success: true, status: transaction.status, transaction };
             }
 
@@ -530,9 +539,11 @@ class PaymentService {
                         console.log('✅ [PaymentService] Moolre returned definitive status:', gatewayStatus.status);
                         transaction.status = gatewayStatus.status;
 
-                        if (gatewayStatus.status === 'success') {
+                        if (gatewayStatus.status === 'success' || gatewayStatus.status === 'failed') {
                             transaction.completedAt = new Date();
+                        }
 
+                        if (gatewayStatus.status === 'success') {
                             // Auto-create the order when payment is confirmed
                             try {
                                 const Order = require('../models/Order');
