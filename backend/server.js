@@ -145,12 +145,13 @@ function resolvePaymentPackageName(paymentTransaction) {
         '';
 }
 
-// Build bundle transaction descriptions from bundle/provider fields, never the MoMo network.
+// Build transaction descriptions from the actual data-bundle provider and
+// package size, not PaymentTransaction.provider (which may be the MoMo network).
 function buildBundlePurchaseDescription(paymentTransaction = {}, order = null, prefix = '') {
     const metadata = paymentTransaction.metadata || {};
     const provider = metadata.orderProvider || metadata.packageProvider ||
         order?.providerName || order?.package || paymentTransaction.orderProvider ||
-        paymentTransaction.packageProvider || 'Bundle';
+        paymentTransaction.packageProvider || paymentTransaction.provider || 'Bundle';
     const packageName = resolvePaymentPackageName(paymentTransaction) ||
         order?.packageName || order?.bundle_size || order?.bundleSize || order?.bundle || '';
     const beneficiary = metadata.beneficiary || paymentTransaction.phoneNumber ||
@@ -159,8 +160,8 @@ function buildBundlePurchaseDescription(paymentTransaction = {}, order = null, p
     return `${prefix}${itemLabel} Bundle Purchase - ${beneficiary}`.trim();
 }
 
-// Correct descriptions for existing linked transactions at response time only.
-// This does not update or rewrite stored Transaction/PaymentTransaction documents.
+// Repair descriptions at read time for existing transactions that are linked to
+// an Order/PaymentTransaction. This is display-only and does not rewrite records.
 async function enrichTransactionDescriptions(transactions = []) {
     if (!transactions.length) return transactions;
     const orderIds = [...new Set(transactions.map(t => t.orderId).filter(Boolean).map(String))];
@@ -171,25 +172,26 @@ async function enrichTransactionDescriptions(transactions = []) {
         }).lean()
         : [];
     const orderById = new Map(orders.map(o => [String(o._id), o]));
-    const paymentIds = [...new Set(orders.map(o => o.transactionId).filter(Boolean).map(String))];
+    const paymentIds = [...new Set(orders.map(o => o.transactionId).filter(Boolean))];
     const paymentAttempts = paymentIds.length
         ? await PaymentTransaction.find({ transactionId: { $in: paymentIds } }, {
-            transactionId: 1, provider: 1, orderProvider: 1, packageProvider: 1,
-            packageName: 1, bundle: 1, phoneNumber: 1, metadata: 1
+            transactionId: 1, provider: 1, packageName: 1, bundle: 1, phoneNumber: 1, metadata: 1
         }).lean()
         : [];
-    const paymentById = new Map(paymentAttempts.map(p => [String(p.transactionId), p]));
+    const paymentById = new Map(paymentAttempts.map(p => [p.transactionId, p]));
 
     return transactions.map(transaction => {
         const order = transaction.orderId ? orderById.get(String(transaction.orderId)) : null;
-        const payment = order?.transactionId ? paymentById.get(String(order.transactionId)) : null;
+        const payment = order?.transactionId ? paymentById.get(order.transactionId) : null;
         if (!order && !payment) return transaction;
-        const oldDescription = String(transaction.description || '');
-        const prefix = /^\s*FAILED:\s*/i.test(oldDescription) ? 'FAILED: '
-            : /^\s*PENDING:\s*/i.test(oldDescription) ? 'PENDING: ' : '';
+        const prefix = /^\s*FAILED:\s*/i.test(transaction.description || '') ? 'FAILED: '
+            : /^\s*PENDING:\s*/i.test(transaction.description || '') ? 'PENDING: ' : '';
         const description = buildBundlePurchaseDescription(payment || {}, order, prefix);
         const hasPackage = Boolean(resolvePaymentPackageName(payment || {}) || order?.packageName || order?.bundle_size || order?.bundleSize || order?.bundle);
-        return hasPackage ? { ...transaction, description } : transaction;
+        // Avoid replacing the stored description with a guess when the original
+        // package size is unavailable.
+        if (hasPackage) return { ...transaction, description };
+        return transaction;
     });
 }
 
@@ -1824,12 +1826,13 @@ app.get('/api/transactions', async (req, res) => {
         const transactions = [...current, ...visibleHistorical]
             .sort((a, b) => new Date(b.created || 0).getTime() - new Date(a.created || 0).getTime())
             .slice(0, 200);
+        const enrichedTransactions = await enrichTransactionDescriptions(transactions);
         console.log('[Transactions] Returning order transaction records', {
             userId: userId || null,
             storeSlug: req.query.storeSlug || null,
-            count: transactions.length
+            count: enrichedTransactions.length
         });
-        res.json(transactions);
+        res.json(enrichedTransactions);
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
@@ -3106,8 +3109,7 @@ app.get('/api/admin/transactions/:id', auth, admin, async (req, res) => {
     try {
         const txn = await Transaction.findById(req.params.id).populate('userId', 'username email');
         if (!txn) return res.status(404).json({ message: 'Transaction not found' });
-        const [enriched] = await enrichTransactionDescriptions([txn.toObject()]);
-        res.json(enriched);
+        res.json(txn);
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
@@ -4845,13 +4847,14 @@ app.get('/api/user/transactions', auth, async (req, res) => {
 
         const allTransactions = await Transaction.find(query)
             .sort({ created: -1 })
+            .limit(200)
             .lean();
         const { current, historical } = await splitTransactionsAtReconciliationCutoff(allTransactions);
         const visibleHistorical = historical.filter(txn => !isPendingOrFailedStatus(txn.status));
         const visibleTransactions = [...current, ...visibleHistorical]
             .sort((a, b) => new Date(b.created || 0).getTime() - new Date(a.created || 0).getTime());
 
-        res.json(await enrichTransactionDescriptions(visibleTransactions));
+        res.json(await enrichTransactionDescriptions(visibleTransactions.slice(0, 50)));
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
@@ -4885,8 +4888,7 @@ app.get('/api/user/transactions/:transactionId', auth, async (req, res) => {
             return res.status(403).json({ message: 'Unauthorized' });
         }
 
-        const [enriched] = await enrichTransactionDescriptions([transaction.toObject()]);
-        res.json(enriched);
+        res.json(transaction);
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
@@ -5635,5 +5637,3 @@ if (require.main === module) {
 }
 
 module.exports = app;
-
-        
