@@ -145,14 +145,11 @@ function resolvePaymentPackageName(paymentTransaction) {
         '';
 }
 
-// Build transaction descriptions from the actual data-bundle provider and
-// package size, not PaymentTransaction.provider (which may be the MoMo network).
+// Build bundle transaction descriptions from bundle/provider fields, never the MoMo network.
 function buildBundlePurchaseDescription(paymentTransaction = {}, order = null, prefix = '') {
     const metadata = paymentTransaction.metadata || {};
-    // Do not use paymentTransaction.provider as a fallback: in this codebase it
-    // can be the Mobile Money network rather than the bundle/data provider.
-    const provider = order?.providerName || order?.package || metadata.orderProvider ||
-        metadata.packageProvider || paymentTransaction.orderProvider ||
+    const provider = metadata.orderProvider || metadata.packageProvider ||
+        order?.providerName || order?.package || paymentTransaction.orderProvider ||
         paymentTransaction.packageProvider || 'Bundle';
     const packageName = resolvePaymentPackageName(paymentTransaction) ||
         order?.packageName || order?.bundle_size || order?.bundleSize || order?.bundle || '';
@@ -162,8 +159,8 @@ function buildBundlePurchaseDescription(paymentTransaction = {}, order = null, p
     return `${prefix}${itemLabel} Bundle Purchase - ${beneficiary}`.trim();
 }
 
-// Repair descriptions at read time for existing transactions that are linked to
-// an Order/PaymentTransaction. This is display-only and does not rewrite records.
+// Correct descriptions for existing linked transactions at response time only.
+// This does not update or rewrite stored Transaction/PaymentTransaction documents.
 async function enrichTransactionDescriptions(transactions = []) {
     if (!transactions.length) return transactions;
     const orderIds = [...new Set(transactions.map(t => t.orderId).filter(Boolean).map(String))];
@@ -174,26 +171,25 @@ async function enrichTransactionDescriptions(transactions = []) {
         }).lean()
         : [];
     const orderById = new Map(orders.map(o => [String(o._id), o]));
-    const paymentIds = [...new Set(orders.map(o => o.transactionId).filter(Boolean))];
+    const paymentIds = [...new Set(orders.map(o => o.transactionId).filter(Boolean).map(String))];
     const paymentAttempts = paymentIds.length
         ? await PaymentTransaction.find({ transactionId: { $in: paymentIds } }, {
-            transactionId: 1, provider: 1, packageName: 1, bundle: 1, phoneNumber: 1, metadata: 1
+            transactionId: 1, provider: 1, orderProvider: 1, packageProvider: 1,
+            packageName: 1, bundle: 1, phoneNumber: 1, metadata: 1
         }).lean()
         : [];
-    const paymentById = new Map(paymentAttempts.map(p => [p.transactionId, p]));
+    const paymentById = new Map(paymentAttempts.map(p => [String(p.transactionId), p]));
 
     return transactions.map(transaction => {
         const order = transaction.orderId ? orderById.get(String(transaction.orderId)) : null;
-        const payment = order?.transactionId ? paymentById.get(order.transactionId) : null;
+        const payment = order?.transactionId ? paymentById.get(String(order.transactionId)) : null;
         if (!order && !payment) return transaction;
-        const prefix = /^\\s*FAILED:\\s*/i.test(transaction.description || '') ? 'FAILED: '
-            : /^\\s*PENDING:\\s*/i.test(transaction.description || '') ? 'PENDING: ' : '';
+        const oldDescription = String(transaction.description || '');
+        const prefix = /^\s*FAILED:\s*/i.test(oldDescription) ? 'FAILED: '
+            : /^\s*PENDING:\s*/i.test(oldDescription) ? 'PENDING: ' : '';
         const description = buildBundlePurchaseDescription(payment || {}, order, prefix);
         const hasPackage = Boolean(resolvePaymentPackageName(payment || {}) || order?.packageName || order?.bundle_size || order?.bundleSize || order?.bundle);
-        // Avoid replacing the stored description with a guess when the original
-        // package size is unavailable.
-        if (hasPackage) return { ...transaction, description };
-        return transaction;
+        return hasPackage ? { ...transaction, description } : transaction;
     });
 }
 
@@ -1196,7 +1192,7 @@ async function ensurePaymentAttemptRecords(paymentTransaction) {
             storeSlug,
             clientType: latest.clientType || latest.metadata?.clientType || 'Customers',
             beneficiary_phone: latest.phoneNumber || beneficiary,
-            description: buildBundlePurchaseDescription(latest, order, failed ? 'FAILED: ' : 'PENDING: '),
+            description: buildBundlePurchaseDescription(latest, null, failed ? 'FAILED: ' : 'PENDING: '),
             balance_before: 0,
             amount: latest.totalAmount || latest.amount || 0,
             method: 'Mobile Money',
@@ -3110,8 +3106,8 @@ app.get('/api/admin/transactions/:id', auth, admin, async (req, res) => {
     try {
         const txn = await Transaction.findById(req.params.id).populate('userId', 'username email');
         if (!txn) return res.status(404).json({ message: 'Transaction not found' });
-        const [enrichedTxn] = await enrichTransactionDescriptions([txn.toObject ? txn.toObject() : txn]);
-        res.json(enrichedTxn);
+        const [enriched] = await enrichTransactionDescriptions([txn.toObject()]);
+        res.json(enriched);
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
@@ -4889,12 +4885,8 @@ app.get('/api/user/transactions/:transactionId', auth, async (req, res) => {
             return res.status(403).json({ message: 'Unauthorized' });
         }
 
-        // Apply the same display-time description correction used by the list
-        // endpoint so existing linked transactions are corrected in detail views too.
-        const [enrichedTransaction] = await enrichTransactionDescriptions([
-            transaction.toObject ? transaction.toObject() : transaction
-        ]);
-        res.json(enrichedTransaction);
+        const [enriched] = await enrichTransactionDescriptions([transaction.toObject()]);
+        res.json(enriched);
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
