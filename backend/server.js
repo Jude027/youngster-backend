@@ -149,9 +149,11 @@ function resolvePaymentPackageName(paymentTransaction) {
 // package size, not PaymentTransaction.provider (which may be the MoMo network).
 function buildBundlePurchaseDescription(paymentTransaction = {}, order = null, prefix = '') {
     const metadata = paymentTransaction.metadata || {};
-    const provider = metadata.orderProvider || metadata.packageProvider ||
-        order?.providerName || order?.package || paymentTransaction.orderProvider ||
-        paymentTransaction.packageProvider || paymentTransaction.provider || 'Bundle';
+    // Do not use paymentTransaction.provider as a fallback: in this codebase it
+    // can be the Mobile Money network rather than the bundle/data provider.
+    const provider = order?.providerName || order?.package || metadata.orderProvider ||
+        metadata.packageProvider || paymentTransaction.orderProvider ||
+        paymentTransaction.packageProvider || 'Bundle';
     const packageName = resolvePaymentPackageName(paymentTransaction) ||
         order?.packageName || order?.bundle_size || order?.bundleSize || order?.bundle || '';
     const beneficiary = metadata.beneficiary || paymentTransaction.phoneNumber ||
@@ -1089,7 +1091,7 @@ async function ensurePaymentAttemptRecords(paymentTransaction) {
                 storeSlug: txn.storeSlug || txn.metadata?.storeSlug || order.storeSlug || null,
                 clientType: txn.clientType || txn.metadata?.clientType || order.clientType || '',
                 beneficiary_phone: txn.phoneNumber || order.phoneNumber || '',
-                description: `${isFailed ? 'FAILED: ' : ''}${txn.provider || order.providerName || 'Bundle'} Bundle Purchase - ${txn.metadata?.beneficiary || txn.phoneNumber || order.beneficiary || ''}`,
+                description: buildBundlePurchaseDescription(txn, order, isFailed ? 'FAILED: ' : ''),
                 balance_before: 0,
                 amount: txn.totalAmount || txn.amount || order.amount || 0,
                 method: 'Mobile Money',
@@ -1194,7 +1196,7 @@ async function ensurePaymentAttemptRecords(paymentTransaction) {
             storeSlug,
             clientType: latest.clientType || latest.metadata?.clientType || 'Customers',
             beneficiary_phone: latest.phoneNumber || beneficiary,
-            description: `${failed ? 'FAILED: ' : 'PENDING: '}${resolvedProvider || latest.provider || 'Bundle'} Purchase - ${beneficiary}`,
+            description: buildBundlePurchaseDescription(latest, order, failed ? 'FAILED: ' : 'PENDING: '),
             balance_before: 0,
             amount: latest.totalAmount || latest.amount || 0,
             method: 'Mobile Money',
@@ -3108,7 +3110,8 @@ app.get('/api/admin/transactions/:id', auth, admin, async (req, res) => {
     try {
         const txn = await Transaction.findById(req.params.id).populate('userId', 'username email');
         if (!txn) return res.status(404).json({ message: 'Transaction not found' });
-        res.json(txn);
+        const [enrichedTxn] = await enrichTransactionDescriptions([txn.toObject ? txn.toObject() : txn]);
+        res.json(enrichedTxn);
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
@@ -4886,7 +4889,10 @@ app.get('/api/user/transactions/:transactionId', auth, async (req, res) => {
             return res.status(403).json({ message: 'Unauthorized' });
         }
 
-        res.json(transaction);
+        const [enrichedTransaction] = await enrichTransactionDescriptions([
+            transaction.toObject ? transaction.toObject() : transaction
+        ]);
+        res.json(enrichedTransaction);
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
