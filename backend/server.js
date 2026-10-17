@@ -145,6 +145,56 @@ function resolvePaymentPackageName(paymentTransaction) {
         '';
 }
 
+// Build transaction descriptions from the actual data-bundle provider and
+// package size, not PaymentTransaction.provider (which may be the MoMo network).
+function buildBundlePurchaseDescription(paymentTransaction = {}, order = null, prefix = '') {
+    const metadata = paymentTransaction.metadata || {};
+    const provider = metadata.orderProvider || metadata.packageProvider ||
+        order?.providerName || order?.package || paymentTransaction.orderProvider ||
+        paymentTransaction.packageProvider || paymentTransaction.provider || 'Bundle';
+    const packageName = resolvePaymentPackageName(paymentTransaction) ||
+        order?.packageName || order?.bundle_size || order?.bundleSize || order?.bundle || '';
+    const beneficiary = metadata.beneficiary || paymentTransaction.phoneNumber ||
+        order?.beneficiary || order?.phoneNumber || '';
+    const itemLabel = [provider, packageName].filter(Boolean).join(' ').trim() || 'Bundle';
+    return `${prefix}${itemLabel} Bundle Purchase - ${beneficiary}`.trim();
+}
+
+// Repair descriptions at read time for existing transactions that are linked to
+// an Order/PaymentTransaction. This is display-only and does not rewrite records.
+async function enrichTransactionDescriptions(transactions = []) {
+    if (!transactions.length) return transactions;
+    const orderIds = [...new Set(transactions.map(t => t.orderId).filter(Boolean).map(String))];
+    const orders = orderIds.length
+        ? await Order.find({ _id: { $in: orderIds } }, {
+            _id: 1, transactionId: 1, providerName: 1, package: 1, packageName: 1,
+            bundle_size: 1, bundleSize: 1, bundle: 1, beneficiary: 1, phoneNumber: 1
+        }).lean()
+        : [];
+    const orderById = new Map(orders.map(o => [String(o._id), o]));
+    const paymentIds = [...new Set(orders.map(o => o.transactionId).filter(Boolean))];
+    const paymentAttempts = paymentIds.length
+        ? await PaymentTransaction.find({ transactionId: { $in: paymentIds } }, {
+            transactionId: 1, provider: 1, packageName: 1, bundle: 1, phoneNumber: 1, metadata: 1
+        }).lean()
+        : [];
+    const paymentById = new Map(paymentAttempts.map(p => [p.transactionId, p]));
+
+    return transactions.map(transaction => {
+        const order = transaction.orderId ? orderById.get(String(transaction.orderId)) : null;
+        const payment = order?.transactionId ? paymentById.get(order.transactionId) : null;
+        if (!order && !payment) return transaction;
+        const prefix = /^\\s*FAILED:\\s*/i.test(transaction.description || '') ? 'FAILED: '
+            : /^\\s*PENDING:\\s*/i.test(transaction.description || '') ? 'PENDING: ' : '';
+        const description = buildBundlePurchaseDescription(payment || {}, order, prefix);
+        const hasPackage = Boolean(resolvePaymentPackageName(payment || {}) || order?.packageName || order?.bundle_size || order?.bundleSize || order?.bundle);
+        // Avoid replacing the stored description with a guess when the original
+        // package size is unavailable.
+        if (hasPackage) return { ...transaction, description };
+        return transaction;
+    });
+}
+
 function normalizeText(value = '') {
     return String(value).trim().toLowerCase();
 }
@@ -662,7 +712,7 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
                         userId: fallbackUserId,
                         storeSlug: fallbackStoreSlug,
                         beneficiary_phone: paymentTransaction.phoneNumber,
-                        description: `${paymentTransaction.provider} Bundle Purchase - ${fallbackBeneficiary}`,
+                        description: buildBundlePurchaseDescription(paymentTransaction, existingOrder),
                         balance_before: 0,
                         amount: paymentTransaction.totalAmount || paymentTransaction.amount,
                         method: 'Mobile Money',
@@ -776,7 +826,7 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
                     userId: fallbackUserId,
                     storeSlug: fallbackStoreSlug,
                     beneficiary_phone: paymentTransaction.phoneNumber,
-                    description: `${paymentTransaction.provider} Bundle Purchase - ${fallbackBeneficiary}`,
+                    description: buildBundlePurchaseDescription(paymentTransaction, existingByTxn),
                     balance_before: 0,
                     amount: paymentTransaction.totalAmount || paymentTransaction.amount,
                     method: 'Mobile Money',
@@ -926,7 +976,7 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
         userId,
         storeSlug,
         beneficiary_phone: paymentTransaction.phoneNumber,
-        description: `${paymentTransaction.provider} Bundle Purchase - ${resolvedBeneficiary}`,
+        description: buildBundlePurchaseDescription(paymentTransaction, order),
         balance_before: balanceBefore,
         amount: paymentTransaction.totalAmount || paymentTransaction.amount,
         method: 'Mobile Money',
@@ -1611,12 +1661,12 @@ app.get('/api/orders', async (req, res) => {
 
         // Hide only historical Pending/Failed records associated with the old
         // reconciliation backlog. Genuine new orders in any status remain visible.
-        const orders = await Order.find(query).sort({ created: -1 }).limit(200).lean();
+        const orders = await Order.find(query).sort({ created: -1 }).lean();
         const { current, historical } = await splitOrdersAtReconciliationCutoff(orders);
         const visibleHistorical = historical.filter(order => !isPendingOrFailedStatus(order.status));
         const visibleOrders = [...current, ...visibleHistorical]
             .sort((a, b) => new Date(b.created || 0).getTime() - new Date(a.created || 0).getTime());
-        res.json(visibleOrders.slice(0, 50));
+        res.json(visibleOrders);
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
@@ -3048,7 +3098,7 @@ app.get('/api/admin/transactions', auth, admin, async (req, res) => {
         const visibleHistorical = historical.filter(txn => !isPendingOrFailedStatus(txn.status));
         const visibleTransactions = [...current, ...visibleHistorical]
             .sort((a, b) => new Date(b.created || 0).getTime() - new Date(a.created || 0).getTime());
-        res.json(visibleTransactions);
+        res.json(await enrichTransactionDescriptions(visibleTransactions));
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
@@ -4774,12 +4824,12 @@ app.get('/api/user/orders', auth, async (req, res) => {
             ? { $or: [{ userId: req.user.id }, { storeSlug: { $in: storeSlugs } }] }
             : { userId: req.user.id };
 
-        const orders = await Order.find(query).sort({ created: -1 }).limit(200).lean();
+        const orders = await Order.find(query).sort({ created: -1 }).lean();
         const { current, historical } = await splitOrdersAtReconciliationCutoff(orders);
         const visibleHistorical = historical.filter(order => !isPendingOrFailedStatus(order.status));
         const visibleOrders = [...current, ...visibleHistorical]
             .sort((a, b) => new Date(b.created || 0).getTime() - new Date(a.created || 0).getTime());
-        res.json(visibleOrders.slice(0, 50));
+        res.json(visibleOrders);
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
@@ -4796,14 +4846,13 @@ app.get('/api/user/transactions', auth, async (req, res) => {
 
         const allTransactions = await Transaction.find(query)
             .sort({ created: -1 })
-            .limit(200)
             .lean();
         const { current, historical } = await splitTransactionsAtReconciliationCutoff(allTransactions);
         const visibleHistorical = historical.filter(txn => !isPendingOrFailedStatus(txn.status));
         const visibleTransactions = [...current, ...visibleHistorical]
             .sort((a, b) => new Date(b.created || 0).getTime() - new Date(a.created || 0).getTime());
 
-        res.json(visibleTransactions.slice(0, 50));
+        res.json(await enrichTransactionDescriptions(visibleTransactions));
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
