@@ -1241,7 +1241,7 @@ class UniversalAPIHandler {
     /**
      * Get wallet balance from external API
      */
-    static async getBalance(providerName) {
+    static async getBalance(providerName, configIndex = null) {
         try {
             const provider = await Provider.findOne({ name: providerName });
     
@@ -1249,10 +1249,23 @@ class UniversalAPIHandler {
                 throw new Error('Provider not found');
             }
     
-            const config = getActiveApiConfig(provider);
+            let config;
+            if (configIndex === -1) {
+                config = provider.apiConfig;
+            } else if (Number.isInteger(configIndex) && configIndex >= 0) {
+                config = Array.isArray(provider.apiConfigs) ? provider.apiConfigs[configIndex] : null;
+                if (!config) {
+                    throw new Error(`API configuration index ${configIndex} was not found`);
+                }
+            } else {
+                config = getActiveApiConfig(provider);
+            }
     
             if (!config) {
                 throw new Error('Provider API configuration not found');
+            }
+            if (config.enabled === false) {
+                throw new Error('The selected API configuration is disabled. Enable it before testing the connection.');
             }
     
             const isSPFastITIShare =
