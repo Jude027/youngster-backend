@@ -13,6 +13,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const path = require('path');
 const util = require('util');
+const crypto = require('crypto');
 
 // Load models
 const User = require('./models/User');
@@ -25,6 +26,7 @@ const Withdrawal = require('./models/Withdrawal');
 const BasePrice = require('./models/BasePrice');
 const PaymentGateway = require('./models/PaymentGateway');
 const PaymentTransaction = require('./models/PaymentTransaction');
+const ReferralLink = require('./models/ReferralLink');
 const PaymentService = require('./services/PaymentService');
 const { startOrderStatusUpdater } = require('./order-status-updater');
 dotenv.config();
@@ -141,56 +143,6 @@ function resolvePaymentPackageName(paymentTransaction) {
         paymentTransaction.metadata?.bundle_size ||
         paymentTransaction.bundle ||
         '';
-}
-
-// Build transaction descriptions from the actual data-bundle provider and
-// package size, not PaymentTransaction.provider (which may be the MoMo network).
-function buildBundlePurchaseDescription(paymentTransaction = {}, order = null, prefix = '') {
-    const metadata = paymentTransaction.metadata || {};
-    const provider = metadata.orderProvider || metadata.packageProvider ||
-        order?.providerName || order?.package || paymentTransaction.orderProvider ||
-        paymentTransaction.packageProvider || paymentTransaction.provider || 'Bundle';
-    const packageName = resolvePaymentPackageName(paymentTransaction) ||
-        order?.packageName || order?.bundle_size || order?.bundleSize || order?.bundle || '';
-    const beneficiary = metadata.beneficiary || paymentTransaction.phoneNumber ||
-        order?.beneficiary || order?.phoneNumber || '';
-    const itemLabel = [provider, packageName].filter(Boolean).join(' ').trim() || 'Bundle';
-    return `${prefix}${itemLabel} Bundle Purchase - ${beneficiary}`.trim();
-}
-
-// Repair descriptions at read time for existing transactions that are linked to
-// an Order/PaymentTransaction. This is display-only and does not rewrite records.
-async function enrichTransactionDescriptions(transactions = []) {
-    if (!transactions.length) return transactions;
-    const orderIds = [...new Set(transactions.map(t => t.orderId).filter(Boolean).map(String))];
-    const orders = orderIds.length
-        ? await Order.find({ _id: { $in: orderIds } }, {
-            _id: 1, transactionId: 1, providerName: 1, package: 1, packageName: 1,
-            bundle_size: 1, bundleSize: 1, bundle: 1, beneficiary: 1, phoneNumber: 1
-        }).lean()
-        : [];
-    const orderById = new Map(orders.map(o => [String(o._id), o]));
-    const paymentIds = [...new Set(orders.map(o => o.transactionId).filter(Boolean))];
-    const paymentAttempts = paymentIds.length
-        ? await PaymentTransaction.find({ transactionId: { $in: paymentIds } }, {
-            transactionId: 1, provider: 1, packageName: 1, bundle: 1, phoneNumber: 1, metadata: 1
-        }).lean()
-        : [];
-    const paymentById = new Map(paymentAttempts.map(p => [p.transactionId, p]));
-
-    return transactions.map(transaction => {
-        const order = transaction.orderId ? orderById.get(String(transaction.orderId)) : null;
-        const payment = order?.transactionId ? paymentById.get(order.transactionId) : null;
-        if (!order && !payment) return transaction;
-        const prefix = /^\s*FAILED:\s*/i.test(transaction.description || '') ? 'FAILED: '
-            : /^\s*PENDING:\s*/i.test(transaction.description || '') ? 'PENDING: ' : '';
-        const description = buildBundlePurchaseDescription(payment || {}, order, prefix);
-        const hasPackage = Boolean(resolvePaymentPackageName(payment || {}) || order?.packageName || order?.bundle_size || order?.bundleSize || order?.bundle);
-        // Avoid replacing the stored description with a guess when the original
-        // package size is unavailable.
-        if (hasPackage) return { ...transaction, description };
-        return transaction;
-    });
 }
 
 function normalizeText(value = '') {
@@ -710,7 +662,7 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
                         userId: fallbackUserId,
                         storeSlug: fallbackStoreSlug,
                         beneficiary_phone: paymentTransaction.phoneNumber,
-                        description: buildBundlePurchaseDescription(paymentTransaction, existingOrder),
+                        description: `${paymentTransaction.provider} Bundle Purchase - ${fallbackBeneficiary}`,
                         balance_before: 0,
                         amount: paymentTransaction.totalAmount || paymentTransaction.amount,
                         method: 'Mobile Money',
@@ -824,7 +776,7 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
                     userId: fallbackUserId,
                     storeSlug: fallbackStoreSlug,
                     beneficiary_phone: paymentTransaction.phoneNumber,
-                    description: buildBundlePurchaseDescription(paymentTransaction, existingByTxn),
+                    description: `${paymentTransaction.provider} Bundle Purchase - ${fallbackBeneficiary}`,
                     balance_before: 0,
                     amount: paymentTransaction.totalAmount || paymentTransaction.amount,
                     method: 'Mobile Money',
@@ -974,7 +926,7 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
         userId,
         storeSlug,
         beneficiary_phone: paymentTransaction.phoneNumber,
-        description: buildBundlePurchaseDescription(paymentTransaction, order),
+        description: `${paymentTransaction.provider} Bundle Purchase - ${resolvedBeneficiary}`,
         balance_before: balanceBefore,
         amount: paymentTransaction.totalAmount || paymentTransaction.amount,
         method: 'Mobile Money',
@@ -1087,7 +1039,7 @@ async function ensurePaymentAttemptRecords(paymentTransaction) {
                 storeSlug: txn.storeSlug || txn.metadata?.storeSlug || order.storeSlug || null,
                 clientType: txn.clientType || txn.metadata?.clientType || order.clientType || '',
                 beneficiary_phone: txn.phoneNumber || order.phoneNumber || '',
-                description: buildBundlePurchaseDescription(txn, order, isFailed ? 'FAILED: ' : ''),
+                description: `${isFailed ? 'FAILED: ' : ''}${txn.provider || order.providerName || 'Bundle'} Bundle Purchase - ${txn.metadata?.beneficiary || txn.phoneNumber || order.beneficiary || ''}`,
                 balance_before: 0,
                 amount: txn.totalAmount || txn.amount || order.amount || 0,
                 method: 'Mobile Money',
@@ -1192,7 +1144,7 @@ async function ensurePaymentAttemptRecords(paymentTransaction) {
             storeSlug,
             clientType: latest.clientType || latest.metadata?.clientType || 'Customers',
             beneficiary_phone: latest.phoneNumber || beneficiary,
-            description: buildBundlePurchaseDescription(latest, null, failed ? 'FAILED: ' : 'PENDING: '),
+            description: `${failed ? 'FAILED: ' : 'PENDING: '}${resolvedProvider || latest.provider || 'Bundle'} Purchase - ${beneficiary}`,
             balance_before: 0,
             amount: latest.totalAmount || latest.amount || 0,
             method: 'Mobile Money',
@@ -1659,12 +1611,12 @@ app.get('/api/orders', async (req, res) => {
 
         // Hide only historical Pending/Failed records associated with the old
         // reconciliation backlog. Genuine new orders in any status remain visible.
-        const orders = await Order.find(query).sort({ created: -1 }).lean();
+        const orders = await Order.find(query).sort({ created: -1 }).limit(200).lean();
         const { current, historical } = await splitOrdersAtReconciliationCutoff(orders);
         const visibleHistorical = historical.filter(order => !isPendingOrFailedStatus(order.status));
         const visibleOrders = [...current, ...visibleHistorical]
             .sort((a, b) => new Date(b.created || 0).getTime() - new Date(a.created || 0).getTime());
-        res.json(visibleOrders);
+        res.json(visibleOrders.slice(0, 50));
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
@@ -1675,6 +1627,7 @@ app.post('/api/orders', async (req, res) => {
         const {
             storeSlug,
             clientType,
+            referralToken,
             providerName,
             packageName,
             phoneNumber,
@@ -1682,6 +1635,22 @@ app.post('/api/orders', async (req, res) => {
             capacity,
             ...rest
         } = req.body;
+
+        let trustedStoreSlug = storeSlug || null;
+        let trustedClientType = storeSlug ? 'Customers' : (clientType || undefined);
+        let trustedReferralUserId = null;
+        let trustedReferralLinkId = null;
+        if (referralToken) {
+            const resolvedReferral = await resolveReferralToken(referralToken);
+            if (!resolvedReferral) return res.status(403).json({ message: 'Invalid referral link. Please reopen the store link.' });
+            if (storeSlug && resolvedReferral.store.storeSlug !== storeSlug && !(resolvedReferral.store.previousSlugs || []).includes(storeSlug)) {
+                return res.status(403).json({ message: 'Referral link does not match this store.' });
+            }
+            trustedStoreSlug = resolvedReferral.store.storeSlug;
+            trustedClientType = resolvedReferral.link.clientType;
+            trustedReferralUserId = resolvedReferral.link.userId;
+            trustedReferralLinkId = resolvedReferral.link._id;
+        }
 
         const resolvedProviderName = providerName || req.body.provider || req.body.package || rest.provider || rest.package;
         const resolvedPackageName = packageName || req.body.bundle_size || req.body.bundleSize || rest.bundle_size || rest.bundleSize || rest.packageName || '';
@@ -1691,8 +1660,8 @@ app.post('/api/orders', async (req, res) => {
 
         // Resolve userId: prefer storeSlug lookup, fall back to auth token
         let userId = null;
-        if (storeSlug) {
-            const storeSettings = await findStoreSettingsByStoreSlug(storeSlug);
+        if (trustedStoreSlug) {
+            const storeSettings = trustedReferralUserId ? { userId: trustedReferralUserId } : await findStoreSettingsByStoreSlug(trustedStoreSlug);
             if (storeSettings) userId = storeSettings.userId;
         }
         if (!userId) {
@@ -1705,14 +1674,27 @@ app.post('/api/orders', async (req, res) => {
             }
         }
 
+        if (trustedStoreSlug && userId && resolvedPrice !== undefined && resolvedPrice !== null) {
+            const priceCheck = await validateReferralPrice({
+                userId,
+                clientType: trustedClientType || 'Customers',
+                provider: resolvedProviderName,
+                packageName: resolvedPackageName,
+                amount: resolvedPrice
+            });
+            if (!priceCheck.ok) {
+                return res.status(400).json({ message: priceCheck.reason, expectedAmount: priceCheck.expectedAmount || null });
+            }
+        }
+
         // Create order object
         const order = new Order({
             providerName: resolvedProviderName,
             packageName: resolvedPackageName,
             phoneNumber: resolvedPhoneNumber,
             price: resolvedPrice,
-            storeSlug: storeSlug || null,
-            clientType,
+            storeSlug: trustedStoreSlug || null,
+            clientType: trustedClientType,
             userId,
             bundleSize: req.body.bundleSize || resolvedPackageName,
             bundle_size: req.body.bundle_size || resolvedPackageName,
@@ -1794,13 +1776,12 @@ app.get('/api/transactions', async (req, res) => {
         const transactions = [...current, ...visibleHistorical]
             .sort((a, b) => new Date(b.created || 0).getTime() - new Date(a.created || 0).getTime())
             .slice(0, 200);
-        const enrichedTransactions = await enrichTransactionDescriptions(transactions);
         console.log('[Transactions] Returning order transaction records', {
             userId: userId || null,
             storeSlug: req.query.storeSlug || null,
-            count: enrichedTransactions.length
+            count: transactions.length
         });
-        res.json(enrichedTransactions);
+        res.json(transactions);
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
@@ -1920,7 +1901,7 @@ app.post('/api/referral-prices/bulk', auth, async (req, res) => {
 // GET /api/debug/storefront-prices?store=<slug>&clientType=<type>&provider=<name>
 // Returns exactly what storefront-prices.js would receive, plus diagnosis info.
 // Remove or protect this endpoint after debugging is done.
-app.get('/api/debug/storefront-prices', async (req, res) => {
+app.get('/api/debug/storefront-prices', auth, admin, async (req, res) => {
     try {
         const { store, clientType, provider } = req.query;
         const storeSettings = await findStoreSettingsByStoreSlug(store);
@@ -1978,20 +1959,25 @@ app.get('/api/debug/storefront-prices', async (req, res) => {
 // GET /api/storefront-prices?store=<slug>&clientType=<type>
 app.get('/api/storefront-prices', async (req, res) => {
     try {
-        const { store, clientType } = req.query;
+        const { store, ref } = req.query;
         if (!store) return res.status(400).json({ message: 'store param is required' });
 
-        // Find dealer by storeSlug
-        const storeSettings = await findStoreSettingsByStoreSlug(store);
-        if (!storeSettings) return res.status(404).json({ message: 'Store not found' });
-
-        // Build query — clientType is optional; if absent return all prices for the store.
-        // Use case-insensitive regex so "Sub-agents" matches "sub-agents" etc.
-        const query = { userId: storeSettings.userId };
-        if (clientType) {
-            query.clientType = new RegExp(`^${clientType.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
+        let storeSettings = null;
+        let clientType = 'Customers';
+        if (ref) {
+            const resolved = await resolveReferralToken(ref);
+            if (!resolved || (resolved.store.storeSlug !== store && !(resolved.store.previousSlugs || []).includes(store))) {
+                return res.status(403).json({ message: 'Invalid or mismatched referral link' });
+            }
+            storeSettings = resolved.store;
+            clientType = resolved.link.clientType;
+        } else {
+            // Without a valid opaque referral token, public storefronts can only use
+            // the customer price category; a clientType query parameter is never trusted.
+            storeSettings = await findStoreSettingsByStoreSlug(store);
         }
-
+        if (!storeSettings) return res.status(404).json({ message: 'Store not found' });
+        const query = { userId: storeSettings.userId, clientType: exactTextPattern(clientType) };
         const prices = await ReferralPrice.find(query).lean();
         const filtered = prices.filter(p => p.price > 0);
 
@@ -2054,6 +2040,43 @@ app.get('/api/storefront-prices', async (req, res) => {
     }
 });
 
+// ==================== OPAQUE REFERRAL IDENTIFIERS ====================
+async function resolveReferralToken(token) {
+    const clean = String(token || '').trim();
+    if (!clean || clean.length > 128) return null;
+    const link = await ReferralLink.findOne({ token: clean, active: true }).lean();
+    if (!link) return null;
+    const [store, user] = await Promise.all([
+        StoreSettings.findOne({ userId: link.userId }).sort({ updatedAt: -1, _id: -1 }).lean(),
+        User.findById(link.userId).select('permittedClientTypes').lean()
+    ]);
+    if (!store || !user || !(user.permittedClientTypes || []).some(type => String(type).toLowerCase() === String(link.clientType).toLowerCase())) return null;
+    return { link, store };
+}
+
+function referralPublicBase(req) {
+    const configured = String(process.env.PUBLIC_SITE_URL || 'https://jdyoungsterent.com').replace(/\/$/, '');
+    return configured;
+}
+
+async function validateReferralPrice({ userId, clientType, provider, packageName, amount }) {
+    const norm = value => String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    const rows = await ReferralPrice.find({ userId, clientType: exactTextPattern(clientType) }).lean();
+    const p = norm(provider), b = norm(packageName);
+    let match = rows.find(row => norm(row.provider) === p && norm(row.packageName) === b && Number(row.price) > 0);
+    // The storefront intentionally falls back to BasePrice when the dealer has no
+    // ReferralPrice rows for a provider. Validate against that same visible fallback.
+    if (!match) {
+        const baseRows = await BasePrice.find({ clientType: exactTextPattern(clientType) }).lean();
+        match = baseRows.find(row => norm(row.provider) === p && norm(row.packageName) === b && Number(row.price) > 0);
+    }
+    if (!match) return { ok: false, reason: 'No exact package price is configured for this referral type.' };
+    if (Math.abs(Number(amount) - Number(match.price)) > 0.01) {
+        return { ok: false, reason: 'The submitted amount does not match the price for this referral link.', expectedAmount: Number(match.price) };
+    }
+    return { ok: true, price: Number(match.price) };
+}
+
 // ==================== PERMITTED CLIENT TYPES ====================
 // Returns the list of client types the current user is permitted to show referral links for.
 // These are set by the admin via PUT /api/admin/users/:id/permitted-types.
@@ -2078,6 +2101,36 @@ app.get('/api/my-permitted-client-types', auth, async (req, res) => {
         });
     } catch (err) {
         res.status(500).json({ message: err.message });
+    }
+});
+
+app.post('/api/referral-links/generate', auth, async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id).select('permittedClientTypes');
+        if (!user) return res.status(404).json({ message: 'User not found' });
+        const store = await StoreSettings.findOne({ userId: req.user.id }).sort({ updatedAt: -1, _id: -1 }).lean();
+        if (!store) return res.status(404).json({ message: 'Store settings not found' });
+        const storeSlug = store.storeSlug || slugify(store.storeName || '') || String(req.user.id);
+        const permitted = Array.isArray(user.permittedClientTypes) ? user.permittedClientTypes : [];
+        const links = {};
+        for (const clientType of permitted) {
+            let link = await ReferralLink.findOne({ userId: req.user.id, clientType, active: true });
+            if (!link) {
+                link = await ReferralLink.create({
+                    userId: req.user.id, storeSlug, clientType,
+                    token: crypto.randomBytes(24).toString('hex'), active: true
+                });
+            } else if (link.storeSlug !== storeSlug) {
+                link.storeSlug = storeSlug;
+                await link.save();
+            }
+            links[clientType] = `${referralPublicBase(req)}/referral/${encodeURIComponent(storeSlug)}?ref=${encodeURIComponent(link.token)}`;
+        }
+        res.setHeader('Cache-Control', 'no-store');
+        res.json({ storeSlug, links });
+    } catch (err) {
+        console.error('[ReferralLinks] generate failed', err.message);
+        res.status(500).json({ message: 'Could not generate referral links' });
     }
 });
 
@@ -2329,41 +2382,40 @@ const FRONTEND_BASE = process.env.FRONTEND_URL || 'https://youngster-frontend.ve
 
 app.get('/referral/:slug', async (req, res) => {
     const { slug } = req.params;
-    const client = req.query.client ? `&client=${encodeURIComponent(req.query.client)}` : '';
-    const redirectUrl = `${FRONTEND_BASE}/Dashboard/dashboard2.html?store=${encodeURIComponent(slug)}${client}`;
-
-    // Serve a dynamic HTML page with correct OG tags for WhatsApp/social previews
-    // The browser is redirected instantly via JS — user experience is unchanged
+    const token = String(req.query.ref || '');
     try {
-        const store = await StoreSettings.findOne({
-            $or: [{ storeSlug: slug }, { previousSlugs: slug }]
-        });
-        const storeName = store?.storeName || 'Youngster Data Shop';
-        const storeDesc = store?.storeDescription || 'Get your data bundles here.';
-        const storeLogo = store?.storeLogo || '';
-
-        return res.send(`<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="UTF-8">
-  <title>${storeName}</title>
-  <meta property="og:title" content="${storeName}" />
-  <meta property="og:description" content="${storeDesc}" />
-  <meta property="og:type" content="website" />
-  <meta property="og:url" content="https://youngster-backend.vercel.app/referral/${encodeURIComponent(slug)}" />
-  ${storeLogo ? `<meta property="og:image" content="${storeLogo}" />` : ''}
-  <meta name="twitter:card" content="summary" />
-  <meta name="twitter:title" content="${storeName}" />
-  <meta http-equiv="refresh" content="0;url=${redirectUrl}" />
-  <script>window.location.replace(${JSON.stringify(redirectUrl)});</script>
-</head>
-<body><p>Redirecting to <a href="${redirectUrl}">${storeName}</a>...</p></body>
-</html>`);
-    } catch (_) {
-        return res.redirect(302, redirectUrl);
+        let store = await StoreSettings.findOne({ $or: [{ storeSlug: slug }, { previousSlugs: slug }] }).lean();
+        let resolvedToken = null;
+        if (token) {
+            resolvedToken = await resolveReferralToken(token);
+            if (!resolvedToken || (resolvedToken.store.storeSlug !== slug && !(resolvedToken.store.previousSlugs || []).includes(slug))) {
+                return res.status(404).send('Referral link not found');
+            }
+            store = resolvedToken.store;
+        }
+        if (!store) return res.status(404).send('Store not found');
+        const storeName = store.storeName || 'Youngster Data Shop';
+        const storeDesc = store.storeDescription || 'Get your data bundles here.';
+        const storeLogo = store.storeLogo || '';
+        const params = new URLSearchParams({ store: store.storeSlug || slug });
+        if (token) params.set('ref', token);
+        const redirectUrl = `${FRONTEND_BASE}/Dashboard/dashboard2.html?${params.toString()}`;
+        const esc = value => String(value || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        const canonical = `${referralPublicBase(req)}/referral/${encodeURIComponent(slug)}${token ? `?ref=${encodeURIComponent(token)}` : ''}`;
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        return res.send(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>${esc(storeName)}</title>
+<meta property="og:title" content="${esc(storeName)}"><meta property="og:description" content="${esc(storeDesc)}">
+<meta property="og:type" content="website"><meta property="og:url" content="${esc(canonical)}">
+${storeLogo ? `<meta property="og:image" content="${esc(storeLogo)}">` : ''}
+<meta name="twitter:card" content="summary"><meta name="twitter:title" content="${esc(storeName)}">
+<meta http-equiv="refresh" content="0;url=${esc(redirectUrl)}"><script>window.location.replace(${JSON.stringify(redirectUrl)});</script>
+</head><body><p>Redirecting to ${esc(storeName)}...</p></body></html>`);
+    } catch (err) {
+        console.error('[ReferralPreview] failed', err.message);
+        return res.status(500).send('Could not load referral link');
     }
 });
-
 
 
 // Redirect old ?store= URLs to clean /referral/ URLs
@@ -2996,7 +3048,7 @@ app.get('/api/admin/transactions', auth, admin, async (req, res) => {
         const visibleHistorical = historical.filter(txn => !isPendingOrFailedStatus(txn.status));
         const visibleTransactions = [...current, ...visibleHistorical]
             .sort((a, b) => new Date(b.created || 0).getTime() - new Date(a.created || 0).getTime());
-        res.json(await enrichTransactionDescriptions(visibleTransactions));
+        res.json(visibleTransactions);
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
@@ -4002,6 +4054,7 @@ app.post('/api/payment/initiate', async (req, res) => {
             bundle_size,
             storeSlug,
             clientType,
+            referralToken,
             guestSessionId,
             beneficiary,
             recipientPhoneNumber
@@ -4010,6 +4063,31 @@ app.post('/api/payment/initiate', async (req, res) => {
         const resolvedPaymentNetwork = paymentNetwork || paymentProvider || provider;
         const resolvedOrderProvider = orderProvider || productProvider || req.body.providerName || req.body.package || provider;
         const resolvedBeneficiary = beneficiary || recipientPhoneNumber || '';
+        let trustedStoreSlug = storeSlug || null;
+        let trustedClientType = clientType || 'Customers';
+        let trustedReferralLinkId = null;
+        let trustedReferralUserId = null;
+        if (storeSlug || referralToken) {
+            if (referralToken) {
+                const resolvedReferral = await resolveReferralToken(referralToken);
+                if (!resolvedReferral) return res.status(403).json({ message: 'Invalid referral link. Please reopen the store link.' });
+                if (storeSlug && resolvedReferral.store.storeSlug !== storeSlug && !(resolvedReferral.store.previousSlugs || []).includes(storeSlug)) {
+                    return res.status(403).json({ message: 'Referral link does not match this store.' });
+                }
+                trustedStoreSlug = resolvedReferral.store.storeSlug;
+                trustedClientType = resolvedReferral.link.clientType;
+                trustedReferralLinkId = resolvedReferral.link._id;
+                trustedReferralUserId = resolvedReferral.link.userId;
+            } else {
+                // No opaque referral context: never allow the browser to select a
+                // privileged category. Treat the visit as a customer and still verify
+                // the submitted amount against the customer's configured price.
+                trustedClientType = 'Customers';
+                const customerStore = await StoreSettings.findOne({ $or: [{ storeSlug }, { previousSlugs: storeSlug }] }).lean();
+                if (!customerStore) return res.status(404).json({ message: 'Store not found' });
+                trustedReferralUserId = customerStore.userId;
+            }
+        }
 
         if (!gatewayName || !phoneNumber || !amount || !resolvedPaymentNetwork || !resolvedOrderProvider) {
             return res.status(400).json({ message: 'Missing required fields' });
@@ -4026,12 +4104,24 @@ app.post('/api/payment/initiate', async (req, res) => {
             clientType: clientType || null
         });
 
-        const userId = await resolvePaymentUserId({
+        const userId = trustedReferralUserId || await resolvePaymentUserId({
             userId: req.user?.id || req.body.userId || null,
-            storeSlug,
-            metadata: { storeSlug }
+            storeSlug: trustedStoreSlug,
+            metadata: { storeSlug: trustedStoreSlug }
         });
         const resolvedPackageName = bundle_size || packageName || '';
+        if (trustedStoreSlug && trustedReferralUserId) {
+            const priceCheck = await validateReferralPrice({
+                userId: trustedReferralUserId,
+                clientType: trustedClientType,
+                provider: resolvedOrderProvider,
+                packageName: resolvedPackageName,
+                amount
+            });
+            if (!priceCheck.ok) {
+                return res.status(400).json({ message: priceCheck.reason, expectedAmount: priceCheck.expectedAmount || null });
+            }
+        }
         const result = await PaymentService.initiatePayment(gatewayName, {
             phoneNumber,
             amount,
@@ -4042,8 +4132,8 @@ app.post('/api/payment/initiate', async (req, res) => {
             packageName: resolvedPackageName,
             bundle_size: resolvedPackageName,
             userId,
-            storeSlug,
-            clientType,
+            storeSlug: trustedStoreSlug,
+            clientType: trustedClientType,
             guestSessionId: guestSessionId || null,
             beneficiary: resolvedBeneficiary,
             isUnverified: Boolean(req.body.isUnverified),
@@ -4051,8 +4141,9 @@ app.post('/api/payment/initiate', async (req, res) => {
                 userId,
                 packageName: resolvedPackageName,
                 bundle_size: resolvedPackageName,
-                storeSlug,
-                clientType,
+                storeSlug: trustedStoreSlug,
+                clientType: trustedClientType,
+                referralLinkId: trustedReferralLinkId,
                 guestSessionId: guestSessionId || null,
                 paymentNetwork: resolvedPaymentNetwork,
                 orderProvider: resolvedOrderProvider,
@@ -4683,12 +4774,12 @@ app.get('/api/user/orders', auth, async (req, res) => {
             ? { $or: [{ userId: req.user.id }, { storeSlug: { $in: storeSlugs } }] }
             : { userId: req.user.id };
 
-        const orders = await Order.find(query).sort({ created: -1 }).lean();
+        const orders = await Order.find(query).sort({ created: -1 }).limit(200).lean();
         const { current, historical } = await splitOrdersAtReconciliationCutoff(orders);
         const visibleHistorical = historical.filter(order => !isPendingOrFailedStatus(order.status));
         const visibleOrders = [...current, ...visibleHistorical]
             .sort((a, b) => new Date(b.created || 0).getTime() - new Date(a.created || 0).getTime());
-        res.json(visibleOrders);
+        res.json(visibleOrders.slice(0, 50));
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
@@ -4712,7 +4803,7 @@ app.get('/api/user/transactions', auth, async (req, res) => {
         const visibleTransactions = [...current, ...visibleHistorical]
             .sort((a, b) => new Date(b.created || 0).getTime() - new Date(a.created || 0).getTime());
 
-        res.json(await enrichTransactionDescriptions(visibleTransactions.slice(0, 50)));
+        res.json(visibleTransactions.slice(0, 50));
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
@@ -5429,7 +5520,7 @@ app.get('/:slug/:clientType', async (req, res, next) => {
 });
 
 async function handleStorefrontSlug(slug, clientType, res, next) {
-    const destUrl    = `${FRONTEND_BASE}/Dashboard/dashboard2.html?store=${encodeURIComponent(slug)}&client=${encodeURIComponent(clientType)}`;
+    const destUrl    = `${FRONTEND_BASE}/Dashboard/dashboard2.html?store=${encodeURIComponent(slug)}`;
 
     let storeName = 'Data Shop';
     let storeDesc = 'Buy affordable data bundles here.';
