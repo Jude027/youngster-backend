@@ -4889,6 +4889,8 @@ app.get('/api/user/transactions/:transactionId', auth, async (req, res) => {
             return res.status(403).json({ message: 'Unauthorized' });
         }
 
+        // Apply the same display-time description correction used by the list
+        // endpoint so existing linked transactions are corrected in detail views too.
         const [enrichedTransaction] = await enrichTransactionDescriptions([
             transaction.toObject ? transaction.toObject() : transaction
         ]);
