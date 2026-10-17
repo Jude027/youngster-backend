@@ -13,7 +13,6 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const path = require('path');
 const util = require('util');
-const crypto = require('crypto');
 
 // Load models
 const User = require('./models/User');
@@ -26,7 +25,6 @@ const Withdrawal = require('./models/Withdrawal');
 const BasePrice = require('./models/BasePrice');
 const PaymentGateway = require('./models/PaymentGateway');
 const PaymentTransaction = require('./models/PaymentTransaction');
-const ReferralLink = require('./models/ReferralLink');
 const PaymentService = require('./services/PaymentService');
 const { startOrderStatusUpdater } = require('./order-status-updater');
 dotenv.config();
@@ -143,56 +141,6 @@ function resolvePaymentPackageName(paymentTransaction) {
         paymentTransaction.metadata?.bundle_size ||
         paymentTransaction.bundle ||
         '';
-}
-
-// Build transaction descriptions from the actual data-bundle provider and
-// package size, not PaymentTransaction.provider (which may be the MoMo network).
-function buildBundlePurchaseDescription(paymentTransaction = {}, order = null, prefix = '') {
-    const metadata = paymentTransaction.metadata || {};
-    const provider = metadata.orderProvider || metadata.packageProvider ||
-        order?.providerName || order?.package || paymentTransaction.orderProvider ||
-        paymentTransaction.packageProvider || paymentTransaction.provider || 'Bundle';
-    const packageName = resolvePaymentPackageName(paymentTransaction) ||
-        order?.packageName || order?.bundle_size || order?.bundleSize || order?.bundle || '';
-    const beneficiary = metadata.beneficiary || paymentTransaction.phoneNumber ||
-        order?.beneficiary || order?.phoneNumber || '';
-    const itemLabel = [provider, packageName].filter(Boolean).join(' ').trim() || 'Bundle';
-    return `${prefix}${itemLabel} Bundle Purchase - ${beneficiary}`.trim();
-}
-
-// Repair descriptions at read time for existing transactions that are linked to
-// an Order/PaymentTransaction. This is display-only and does not rewrite records.
-async function enrichTransactionDescriptions(transactions = []) {
-    if (!transactions.length) return transactions;
-    const orderIds = [...new Set(transactions.map(t => t.orderId).filter(Boolean).map(String))];
-    const orders = orderIds.length
-        ? await Order.find({ _id: { $in: orderIds } }, {
-            _id: 1, transactionId: 1, providerName: 1, package: 1, packageName: 1,
-            bundle_size: 1, bundleSize: 1, bundle: 1, beneficiary: 1, phoneNumber: 1
-        }).lean()
-        : [];
-    const orderById = new Map(orders.map(o => [String(o._id), o]));
-    const paymentIds = [...new Set(orders.map(o => o.transactionId).filter(Boolean))];
-    const paymentAttempts = paymentIds.length
-        ? await PaymentTransaction.find({ transactionId: { $in: paymentIds } }, {
-            transactionId: 1, provider: 1, packageName: 1, bundle: 1, phoneNumber: 1, metadata: 1
-        }).lean()
-        : [];
-    const paymentById = new Map(paymentAttempts.map(p => [p.transactionId, p]));
-
-    return transactions.map(transaction => {
-        const order = transaction.orderId ? orderById.get(String(transaction.orderId)) : null;
-        const payment = order?.transactionId ? paymentById.get(order.transactionId) : null;
-        if (!order && !payment) return transaction;
-        const prefix = /^\s*FAILED:\s*/i.test(transaction.description || '') ? 'FAILED: '
-            : /^\s*PENDING:\s*/i.test(transaction.description || '') ? 'PENDING: ' : '';
-        const description = buildBundlePurchaseDescription(payment || {}, order, prefix);
-        const hasPackage = Boolean(resolvePaymentPackageName(payment || {}) || order?.packageName || order?.bundle_size || order?.bundleSize || order?.bundle);
-        // Avoid replacing the stored description with a guess when the original
-        // package size is unavailable.
-        if (hasPackage) return { ...transaction, description };
-        return transaction;
-    });
 }
 
 function normalizeText(value = '') {
@@ -712,7 +660,7 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
                         userId: fallbackUserId,
                         storeSlug: fallbackStoreSlug,
                         beneficiary_phone: paymentTransaction.phoneNumber,
-                        description: buildBundlePurchaseDescription(paymentTransaction, existingOrder),
+                        description: `${paymentTransaction.provider} Bundle Purchase - ${fallbackBeneficiary}`,
                         balance_before: 0,
                         amount: paymentTransaction.totalAmount || paymentTransaction.amount,
                         method: 'Mobile Money',
@@ -826,7 +774,7 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
                     userId: fallbackUserId,
                     storeSlug: fallbackStoreSlug,
                     beneficiary_phone: paymentTransaction.phoneNumber,
-                    description: buildBundlePurchaseDescription(paymentTransaction, existingByTxn),
+                    description: `${paymentTransaction.provider} Bundle Purchase - ${fallbackBeneficiary}`,
                     balance_before: 0,
                     amount: paymentTransaction.totalAmount || paymentTransaction.amount,
                     method: 'Mobile Money',
@@ -976,7 +924,7 @@ async function createPaidOrderRecords(paymentTransaction, gatewayName = paymentT
         userId,
         storeSlug,
         beneficiary_phone: paymentTransaction.phoneNumber,
-        description: buildBundlePurchaseDescription(paymentTransaction, order),
+        description: `${paymentTransaction.provider} Bundle Purchase - ${resolvedBeneficiary}`,
         balance_before: balanceBefore,
         amount: paymentTransaction.totalAmount || paymentTransaction.amount,
         method: 'Mobile Money',
@@ -1089,7 +1037,7 @@ async function ensurePaymentAttemptRecords(paymentTransaction) {
                 storeSlug: txn.storeSlug || txn.metadata?.storeSlug || order.storeSlug || null,
                 clientType: txn.clientType || txn.metadata?.clientType || order.clientType || '',
                 beneficiary_phone: txn.phoneNumber || order.phoneNumber || '',
-                description: buildBundlePurchaseDescription(txn, order, isFailed ? 'FAILED: ' : ''),
+                description: `${isFailed ? 'FAILED: ' : ''}${txn.provider || order.providerName || 'Bundle'} Bundle Purchase - ${txn.metadata?.beneficiary || txn.phoneNumber || order.beneficiary || ''}`,
                 balance_before: 0,
                 amount: txn.totalAmount || txn.amount || order.amount || 0,
                 method: 'Mobile Money',
@@ -1194,7 +1142,7 @@ async function ensurePaymentAttemptRecords(paymentTransaction) {
             storeSlug,
             clientType: latest.clientType || latest.metadata?.clientType || 'Customers',
             beneficiary_phone: latest.phoneNumber || beneficiary,
-            description: buildBundlePurchaseDescription(latest, null, failed ? 'FAILED: ' : 'PENDING: '),
+            description: `${failed ? 'FAILED: ' : 'PENDING: '}${resolvedProvider || latest.provider || 'Bundle'} Purchase - ${beneficiary}`,
             balance_before: 0,
             amount: latest.totalAmount || latest.amount || 0,
             method: 'Mobile Money',
@@ -1324,30 +1272,11 @@ async function submitOrderToProvider(order, orderData) {
             };
         }
 
-        // Unverified MTN numbers must go to the configured fallback API, never
-        // WhatsApp and never the primary Mamsco config. Force API routing before
-        // capacity-based routing rules are evaluated.
-        if (orderData.isUnverified) routing = 'api';
-
-        // Unverified MTN numbers are intentionally routed to the API config
-        // marked forUnverifiedNumbers. UniversalAPIHandler fails closed if that
-        // config is missing; it must never fall back to Mamsco for this order.
+        // Unverified numbers (failed beneficiary check) — skip all automated
+        // routing and leave the order as pending for manual fulfilment.
         if (orderData.isUnverified) {
-            const hasFallback = Array.isArray(provider?.apiConfigs) &&
-                provider.apiConfigs.some(c => c && c.enabled && c.forUnverifiedNumbers === true);
-            if (!hasFallback) {
-                console.error('[ProviderSubmit] Unverified MTN order has no enabled fallback API config', {
-                    orderId: order?._id?.toString(), providerName
-                });
-                return {
-                    success: false,
-                    message: 'This MTN number needs the configured unverified-number API. Please contact support.',
-                    actionRequired: 'UNVERIFIED_API_NOT_CONFIGURED'
-                };
-            }
-            console.log('[ProviderSubmit] Unverified number detected; using the enabled fallback API config', {
-                orderId: order?._id?.toString(), providerName
-            });
+            console.log(`[ProviderSubmit] Number is unverified — skipping API/WhatsApp routing, order left pending for manual fulfilment`);
+            return { success: true, message: 'Order created. Unverified number — requires manual fulfilment.', automated: false };
         }
 
         // Evaluate capacity-based routing rules if mode is 'auto'
@@ -1385,7 +1314,7 @@ async function submitOrderToProvider(order, orderData) {
             // Try API first
             try {
                 result = await UniversalAPIHandler.processOrder(providerName, orderData);
-                if (!orderData.isUnverified && routing === 'auto' && !result?.success && shouldFallbackToWhatsApp(result)) {
+                if (routing === 'auto' && !result?.success && shouldFallbackToWhatsApp(result)) {
                     console.log(`[ProviderSubmit] API unavailable for ${providerName}, falling back to WhatsApp Notifier`, {
                         orderId: order?._id?.toString(),
                         reason: result?.message || result?.error || 'Unknown API failure'
@@ -1396,7 +1325,7 @@ async function submitOrderToProvider(order, orderData) {
                 }
             } catch (err) {
                 // Fallback to WhatsApp if API is not configured or specifically auto-fallback
-                if (!orderData.isUnverified && routing === 'auto' && shouldFallbackToWhatsApp(err)) {
+                if (routing === 'auto' && shouldFallbackToWhatsApp(err)) {
                     console.log(`[ProviderSubmit] API not configured for ${providerName}, falling back to WhatsApp Notifier`, {
                         orderId: order?._id?.toString(),
                         reason: err.message
@@ -1669,6 +1598,8 @@ app.get('/api/orders', async (req, res) => {
 
         let query = {};
         if (userId) {
+            // Fetch orders belonging to this dealer — either directly (wallet orders)
+            // or placed on their storefront (storeSlug orders)
             const allStoreSettings = await StoreSettings.find({ userId }).lean();
             const storeSlugs = allStoreSettings.map(s => s.storeSlug).filter(Boolean);
             query = storeSlugs.length
@@ -1678,14 +1609,8 @@ app.get('/api/orders', async (req, res) => {
             query = { storeSlug: req.query.storeSlug };
         }
 
-        // Hide only historical Pending/Failed records associated with the old
-        // reconciliation backlog. Genuine new orders in any status remain visible.
-        const orders = await Order.find(query).sort({ created: -1 }).lean();
-        const { current, historical } = await splitOrdersAtReconciliationCutoff(orders);
-        const visibleHistorical = historical.filter(order => !isPendingOrFailedStatus(order.status));
-        const visibleOrders = [...current, ...visibleHistorical]
-            .sort((a, b) => new Date(b.created || 0).getTime() - new Date(a.created || 0).getTime());
-        res.json(visibleOrders);
+        const orders = await Order.find(query).sort({ created: -1 });
+        res.json(orders);
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
@@ -1696,7 +1621,6 @@ app.post('/api/orders', async (req, res) => {
         const {
             storeSlug,
             clientType,
-            referralToken,
             providerName,
             packageName,
             phoneNumber,
@@ -1704,22 +1628,6 @@ app.post('/api/orders', async (req, res) => {
             capacity,
             ...rest
         } = req.body;
-
-        let trustedStoreSlug = storeSlug || null;
-        let trustedClientType = storeSlug ? 'Customers' : (clientType || undefined);
-        let trustedReferralUserId = null;
-        let trustedReferralLinkId = null;
-        if (referralToken) {
-            const resolvedReferral = await resolveReferralToken(referralToken);
-            if (!resolvedReferral) return res.status(403).json({ message: 'Invalid referral link. Please reopen the store link.' });
-            if (storeSlug && resolvedReferral.store.storeSlug !== storeSlug && !(resolvedReferral.store.previousSlugs || []).includes(storeSlug)) {
-                return res.status(403).json({ message: 'Referral link does not match this store.' });
-            }
-            trustedStoreSlug = resolvedReferral.store.storeSlug;
-            trustedClientType = resolvedReferral.link.clientType;
-            trustedReferralUserId = resolvedReferral.link.userId;
-            trustedReferralLinkId = resolvedReferral.link._id;
-        }
 
         const resolvedProviderName = providerName || req.body.provider || req.body.package || rest.provider || rest.package;
         const resolvedPackageName = packageName || req.body.bundle_size || req.body.bundleSize || rest.bundle_size || rest.bundleSize || rest.packageName || '';
@@ -1729,8 +1637,8 @@ app.post('/api/orders', async (req, res) => {
 
         // Resolve userId: prefer storeSlug lookup, fall back to auth token
         let userId = null;
-        if (trustedStoreSlug) {
-            const storeSettings = trustedReferralUserId ? { userId: trustedReferralUserId } : await findStoreSettingsByStoreSlug(trustedStoreSlug);
+        if (storeSlug) {
+            const storeSettings = await findStoreSettingsByStoreSlug(storeSlug);
             if (storeSettings) userId = storeSettings.userId;
         }
         if (!userId) {
@@ -1743,27 +1651,14 @@ app.post('/api/orders', async (req, res) => {
             }
         }
 
-        if (trustedStoreSlug && userId && resolvedPrice !== undefined && resolvedPrice !== null) {
-            const priceCheck = await validateReferralPrice({
-                userId,
-                clientType: trustedClientType || 'Customers',
-                provider: resolvedProviderName,
-                packageName: resolvedPackageName,
-                amount: resolvedPrice
-            });
-            if (!priceCheck.ok) {
-                return res.status(400).json({ message: priceCheck.reason, expectedAmount: priceCheck.expectedAmount || null });
-            }
-        }
-
         // Create order object
         const order = new Order({
             providerName: resolvedProviderName,
             packageName: resolvedPackageName,
             phoneNumber: resolvedPhoneNumber,
             price: resolvedPrice,
-            storeSlug: trustedStoreSlug || null,
-            clientType: trustedClientType,
+            storeSlug: storeSlug || null,
+            clientType,
             userId,
             bundleSize: req.body.bundleSize || resolvedPackageName,
             bundle_size: req.body.bundle_size || resolvedPackageName,
@@ -1832,26 +1727,17 @@ app.get('/api/transactions', async (req, res) => {
                 { description: /Bundle Purchase/i }
             ]
         };
-        const orderTransactionQuery = {
-            $and: [
-                ...(Object.keys(query).length ? [query] : []),
-                orderTransactionFilter
-            ]
-        };
+        const orderTransactionQuery = Object.keys(query).length
+            ? { $and: [query, orderTransactionFilter] }
+            : orderTransactionFilter;
 
-        const allTransactions = await Transaction.find(orderTransactionQuery).sort({ created: -1 }).limit(300).lean();
-        const { current, historical } = await splitTransactionsAtReconciliationCutoff(allTransactions);
-        const visibleHistorical = historical.filter(txn => !isPendingOrFailedStatus(txn.status));
-        const transactions = [...current, ...visibleHistorical]
-            .sort((a, b) => new Date(b.created || 0).getTime() - new Date(a.created || 0).getTime())
-            .slice(0, 200);
-        const enrichedTransactions = await enrichTransactionDescriptions(transactions);
+        const transactions = await Transaction.find(orderTransactionQuery).sort({ created: -1 });
         console.log('[Transactions] Returning order transaction records', {
             userId: userId || null,
             storeSlug: req.query.storeSlug || null,
-            count: enrichedTransactions.length
+            count: transactions.length
         });
-        res.json(enrichedTransactions);
+        res.json(transactions);
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
@@ -1897,15 +1783,14 @@ app.get('/api/guest/orders', async (req, res) => {
         if (!guestSessionId || !store) {
             return res.status(400).json({ error: 'guestSessionId and store are required' });
         }
-        // Only return orders for this guest session; historical attempts are
-        // filtered by original payment initiation time where available.
+        // Only return orders that have an actual guestSessionId match.
+        // Never return orders where guestSessionId is null — those are legacy
+        // records that would leak other customers' orders.
         const orders = await Order.find({
             guestSessionId: { $eq: guestSessionId, $ne: null, $exists: true },
             storeSlug: store
-        }).sort({ created: -1 }).limit(200).lean();
-
-        const { current } = await splitOrdersAtReconciliationCutoff(orders);
-        res.json(current.slice(0, 50));
+        }).sort({ created: -1 }).limit(50).lean();
+        res.json(orders);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -1921,12 +1806,8 @@ app.get('/api/guest/transactions', async (req, res) => {
         const txns = await Transaction.find({
             guestSessionId: { $eq: guestSessionId, $ne: null, $exists: true },
             storeSlug: store
-        }).sort({ created: -1 }).limit(200).lean();
-        const { current, historical } = await splitTransactionsAtReconciliationCutoff(txns);
-        const visibleHistorical = historical.filter(txn => !isPendingOrFailedStatus(txn.status));
-        const visibleTxns = [...current, ...visibleHistorical]
-            .sort((a, b) => new Date(b.created || 0).getTime() - new Date(a.created || 0).getTime());
-        res.json(visibleTxns.slice(0, 50));
+        }).sort({ created: -1 }).limit(50).lean();
+        res.json(txns);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -1971,7 +1852,7 @@ app.post('/api/referral-prices/bulk', auth, async (req, res) => {
 // GET /api/debug/storefront-prices?store=<slug>&clientType=<type>&provider=<name>
 // Returns exactly what storefront-prices.js would receive, plus diagnosis info.
 // Remove or protect this endpoint after debugging is done.
-app.get('/api/debug/storefront-prices', auth, admin, async (req, res) => {
+app.get('/api/debug/storefront-prices', async (req, res) => {
     try {
         const { store, clientType, provider } = req.query;
         const storeSettings = await findStoreSettingsByStoreSlug(store);
@@ -2029,25 +1910,20 @@ app.get('/api/debug/storefront-prices', auth, admin, async (req, res) => {
 // GET /api/storefront-prices?store=<slug>&clientType=<type>
 app.get('/api/storefront-prices', async (req, res) => {
     try {
-        const { store, ref } = req.query;
+        const { store, clientType } = req.query;
         if (!store) return res.status(400).json({ message: 'store param is required' });
 
-        let storeSettings = null;
-        let clientType = 'Customers';
-        if (ref) {
-            const resolved = await resolveReferralToken(ref);
-            if (!resolved || (resolved.store.storeSlug !== store && !(resolved.store.previousSlugs || []).includes(store))) {
-                return res.status(403).json({ message: 'Invalid or mismatched referral link' });
-            }
-            storeSettings = resolved.store;
-            clientType = resolved.link.clientType;
-        } else {
-            // Without a valid opaque referral token, public storefronts can only use
-            // the customer price category; a clientType query parameter is never trusted.
-            storeSettings = await findStoreSettingsByStoreSlug(store);
-        }
+        // Find dealer by storeSlug
+        const storeSettings = await findStoreSettingsByStoreSlug(store);
         if (!storeSettings) return res.status(404).json({ message: 'Store not found' });
-        const query = { userId: storeSettings.userId, clientType: exactTextPattern(clientType) };
+
+        // Build query — clientType is optional; if absent return all prices for the store.
+        // Use case-insensitive regex so "Sub-agents" matches "sub-agents" etc.
+        const query = { userId: storeSettings.userId };
+        if (clientType) {
+            query.clientType = new RegExp(`^${clientType.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
+        }
+
         const prices = await ReferralPrice.find(query).lean();
         const filtered = prices.filter(p => p.price > 0);
 
@@ -2110,43 +1986,6 @@ app.get('/api/storefront-prices', async (req, res) => {
     }
 });
 
-// ==================== OPAQUE REFERRAL IDENTIFIERS ====================
-async function resolveReferralToken(token) {
-    const clean = String(token || '').trim();
-    if (!clean || clean.length > 128) return null;
-    const link = await ReferralLink.findOne({ token: clean, active: true }).lean();
-    if (!link) return null;
-    const [store, user] = await Promise.all([
-        StoreSettings.findOne({ userId: link.userId }).sort({ updatedAt: -1, _id: -1 }).lean(),
-        User.findById(link.userId).select('permittedClientTypes').lean()
-    ]);
-    if (!store || !user || !(user.permittedClientTypes || []).some(type => String(type).toLowerCase() === String(link.clientType).toLowerCase())) return null;
-    return { link, store };
-}
-
-function referralPublicBase(req) {
-    const configured = String(process.env.PUBLIC_SITE_URL || 'https://jdyoungsterent.com').replace(/\/$/, '');
-    return configured;
-}
-
-async function validateReferralPrice({ userId, clientType, provider, packageName, amount }) {
-    const norm = value => String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-    const rows = await ReferralPrice.find({ userId, clientType: exactTextPattern(clientType) }).lean();
-    const p = norm(provider), b = norm(packageName);
-    let match = rows.find(row => norm(row.provider) === p && norm(row.packageName) === b && Number(row.price) > 0);
-    // The storefront intentionally falls back to BasePrice when the dealer has no
-    // ReferralPrice rows for a provider. Validate against that same visible fallback.
-    if (!match) {
-        const baseRows = await BasePrice.find({ clientType: exactTextPattern(clientType) }).lean();
-        match = baseRows.find(row => norm(row.provider) === p && norm(row.packageName) === b && Number(row.price) > 0);
-    }
-    if (!match) return { ok: false, reason: 'No exact package price is configured for this referral type.' };
-    if (Math.abs(Number(amount) - Number(match.price)) > 0.01) {
-        return { ok: false, reason: 'The submitted amount does not match the price for this referral link.', expectedAmount: Number(match.price) };
-    }
-    return { ok: true, price: Number(match.price) };
-}
-
 // ==================== PERMITTED CLIENT TYPES ====================
 // Returns the list of client types the current user is permitted to show referral links for.
 // These are set by the admin via PUT /api/admin/users/:id/permitted-types.
@@ -2171,36 +2010,6 @@ app.get('/api/my-permitted-client-types', auth, async (req, res) => {
         });
     } catch (err) {
         res.status(500).json({ message: err.message });
-    }
-});
-
-app.post('/api/referral-links/generate', auth, async (req, res) => {
-    try {
-        const user = await User.findById(req.user.id).select('permittedClientTypes');
-        if (!user) return res.status(404).json({ message: 'User not found' });
-        const store = await StoreSettings.findOne({ userId: req.user.id }).sort({ updatedAt: -1, _id: -1 }).lean();
-        if (!store) return res.status(404).json({ message: 'Store settings not found' });
-        const storeSlug = store.storeSlug || slugify(store.storeName || '') || String(req.user.id);
-        const permitted = Array.isArray(user.permittedClientTypes) ? user.permittedClientTypes : [];
-        const links = {};
-        for (const clientType of permitted) {
-            let link = await ReferralLink.findOne({ userId: req.user.id, clientType, active: true });
-            if (!link) {
-                link = await ReferralLink.create({
-                    userId: req.user.id, storeSlug, clientType,
-                    token: crypto.randomBytes(24).toString('hex'), active: true
-                });
-            } else if (link.storeSlug !== storeSlug) {
-                link.storeSlug = storeSlug;
-                await link.save();
-            }
-            links[clientType] = `${referralPublicBase(req)}/referral/${encodeURIComponent(storeSlug)}?ref=${encodeURIComponent(link.token)}`;
-        }
-        res.setHeader('Cache-Control', 'no-store');
-        res.json({ storeSlug, links });
-    } catch (err) {
-        console.error('[ReferralLinks] generate failed', err.message);
-        res.status(500).json({ message: 'Could not generate referral links' });
     }
 });
 
@@ -2452,40 +2261,41 @@ const FRONTEND_BASE = process.env.FRONTEND_URL || 'https://youngster-frontend.ve
 
 app.get('/referral/:slug', async (req, res) => {
     const { slug } = req.params;
-    const token = String(req.query.ref || '');
+    const client = req.query.client ? `&client=${encodeURIComponent(req.query.client)}` : '';
+    const redirectUrl = `${FRONTEND_BASE}/Dashboard/dashboard2.html?store=${encodeURIComponent(slug)}${client}`;
+
+    // Serve a dynamic HTML page with correct OG tags for WhatsApp/social previews
+    // The browser is redirected instantly via JS — user experience is unchanged
     try {
-        let store = await StoreSettings.findOne({ $or: [{ storeSlug: slug }, { previousSlugs: slug }] }).lean();
-        let resolvedToken = null;
-        if (token) {
-            resolvedToken = await resolveReferralToken(token);
-            if (!resolvedToken || (resolvedToken.store.storeSlug !== slug && !(resolvedToken.store.previousSlugs || []).includes(slug))) {
-                return res.status(404).send('Referral link not found');
-            }
-            store = resolvedToken.store;
-        }
-        if (!store) return res.status(404).send('Store not found');
-        const storeName = store.storeName || 'Youngster Data Shop';
-        const storeDesc = store.storeDescription || 'Get your data bundles here.';
-        const storeLogo = store.storeLogo || '';
-        const params = new URLSearchParams({ store: store.storeSlug || slug });
-        if (token) params.set('ref', token);
-        const redirectUrl = `${FRONTEND_BASE}/Dashboard/dashboard2.html?${params.toString()}`;
-        const esc = value => String(value || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-        const canonical = `${referralPublicBase(req)}/referral/${encodeURIComponent(slug)}${token ? `?ref=${encodeURIComponent(token)}` : ''}`;
-        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-        res.setHeader('Content-Type', 'text/html; charset=utf-8');
-        return res.send(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>${esc(storeName)}</title>
-<meta property="og:title" content="${esc(storeName)}"><meta property="og:description" content="${esc(storeDesc)}">
-<meta property="og:type" content="website"><meta property="og:url" content="${esc(canonical)}">
-${storeLogo ? `<meta property="og:image" content="${esc(storeLogo)}">` : ''}
-<meta name="twitter:card" content="summary"><meta name="twitter:title" content="${esc(storeName)}">
-<meta http-equiv="refresh" content="0;url=${esc(redirectUrl)}"><script>window.location.replace(${JSON.stringify(redirectUrl)});</script>
-</head><body><p>Redirecting to ${esc(storeName)}...</p></body></html>`);
-    } catch (err) {
-        console.error('[ReferralPreview] failed', err.message);
-        return res.status(500).send('Could not load referral link');
+        const store = await StoreSettings.findOne({
+            $or: [{ storeSlug: slug }, { previousSlugs: slug }]
+        });
+        const storeName = store?.storeName || 'Youngster Data Shop';
+        const storeDesc = store?.storeDescription || 'Get your data bundles here.';
+        const storeLogo = store?.storeLogo || '';
+
+        return res.send(`<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>${storeName}</title>
+  <meta property="og:title" content="${storeName}" />
+  <meta property="og:description" content="${storeDesc}" />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://youngster-backend.vercel.app/referral/${encodeURIComponent(slug)}" />
+  ${storeLogo ? `<meta property="og:image" content="${storeLogo}" />` : ''}
+  <meta name="twitter:card" content="summary" />
+  <meta name="twitter:title" content="${storeName}" />
+  <meta http-equiv="refresh" content="0;url=${redirectUrl}" />
+  <script>window.location.replace(${JSON.stringify(redirectUrl)});</script>
+</head>
+<body><p>Redirecting to <a href="${redirectUrl}">${storeName}</a>...</p></body>
+</html>`);
+    } catch (_) {
+        return res.redirect(302, redirectUrl);
     }
 });
+
 
 
 // Redirect old ?store= URLs to clean /referral/ URLs
@@ -3076,13 +2886,7 @@ app.get('/api/admin/orders', auth, admin, async (req, res) => {
             return obj;
         });
 
-        // Hide only historical Pending/Failed records associated with the old
-        // reconciliation backlog. Keep new incoming orders visible in every status.
-        const { current, historical } = await splitOrdersAtReconciliationCutoff(enriched);
-        const visibleHistorical = historical.filter(order => !isPendingOrFailedStatus(order.status));
-        const visibleOrders = [...current, ...visibleHistorical]
-            .sort((a, b) => new Date(b.created || 0).getTime() - new Date(a.created || 0).getTime());
-        res.json(visibleOrders);
+        res.json(enriched);
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
@@ -3113,12 +2917,8 @@ app.put('/api/admin/orders/:id', auth, admin, async (req, res) => {
 
 app.get('/api/admin/transactions', auth, admin, async (req, res) => {
     try {
-        const allTransactions = await Transaction.find().populate('userId', 'username email').sort({ created: -1 }).limit(1000).lean();
-        const { current, historical } = await splitTransactionsAtReconciliationCutoff(allTransactions);
-        const visibleHistorical = historical.filter(txn => !isPendingOrFailedStatus(txn.status));
-        const visibleTransactions = [...current, ...visibleHistorical]
-            .sort((a, b) => new Date(b.created || 0).getTime() - new Date(a.created || 0).getTime());
-        res.json(await enrichTransactionDescriptions(visibleTransactions));
+        const transactions = await Transaction.find().populate('userId', 'username email').sort({ created: -1 });
+        res.json(transactions);
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
@@ -3655,12 +3455,21 @@ app.put('/api/admin/provider-api-config/:providerName', auth, admin, async (req,
         if (!provider) return res.status(404).json({ message: 'Provider not found' });
 
         if (apiConfig) {
-            // Keep the legacy single config separate from the apiConfigs array.
-            // Syncing these fields can overwrite a separately configured provider.
             provider.apiConfig = {
                 ...provider.apiConfig,
                 ...apiConfig
             };
+        
+            // Keep the primary API config in sync.
+            // UniversalAPIHandler uses apiConfigs[0] for normal orders.
+            if (Array.isArray(provider.apiConfigs) && provider.apiConfigs.length > 0) {
+                provider.apiConfigs[0] = {
+                    ...provider.apiConfigs[0].toObject(),
+                    ...apiConfig
+                };
+        
+                provider.markModified('apiConfigs');
+            }
         }
         if (orderRouting) {
             const toNullableNumber = value => {
@@ -3691,7 +3500,6 @@ app.put('/api/admin/provider-api-config/:providerName', auth, admin, async (req,
             provider: {
                 name: provider.name,
                 apiConfig: provider.apiConfig,
-                apiConfigs: provider.apiConfigs,
                 orderRouting: provider.orderRouting,
                 packageMapping: provider.packageMapping
             }
@@ -3703,7 +3511,7 @@ app.put('/api/admin/provider-api-config/:providerName', auth, admin, async (req,
 
 // ==================== PROVIDER API CONFIGS ARRAY (multi-config) ====================
 // These endpoints manage the `apiConfigs` array on a provider, enabling multiple
-// API configurations per provider (e.g. Mamsco for verified MTN orders, DataHub for unverified MTN orders).
+// API configurations per provider (e.g. DataHub for verified numbers, iGet for unverified).
 
 // POST — add a new config entry to the array
 app.post('/api/admin/provider-api-configs/:providerName', auth, admin, async (req, res) => {
@@ -3822,16 +3630,7 @@ app.get('/api/admin/check-order-status/:providerName/:reference', auth, async (r
 // Get provider balance from external API
 app.get('/api/admin/provider-balance/:providerName', auth, admin, async (req, res) => {
     try {
-        const rawIndex = req.query.configIndex;
-        let configIndex = null;
-        if (rawIndex !== undefined) {
-            const parsedIndex = Number(rawIndex);
-            if (!Number.isInteger(parsedIndex) || parsedIndex < -1) {
-                return res.status(400).json({ success: false, message: 'Invalid configuration index' });
-            }
-            configIndex = parsedIndex;
-        }
-        const result = await UniversalAPIHandler.getBalance(req.params.providerName, configIndex);
+        const result = await UniversalAPIHandler.getBalance(req.params.providerName);
         res.json(result);
     } catch (err) {
         res.status(500).json({ message: err.message });
@@ -4125,7 +3924,6 @@ app.post('/api/payment/initiate', async (req, res) => {
             bundle_size,
             storeSlug,
             clientType,
-            referralToken,
             guestSessionId,
             beneficiary,
             recipientPhoneNumber
@@ -4134,31 +3932,6 @@ app.post('/api/payment/initiate', async (req, res) => {
         const resolvedPaymentNetwork = paymentNetwork || paymentProvider || provider;
         const resolvedOrderProvider = orderProvider || productProvider || req.body.providerName || req.body.package || provider;
         const resolvedBeneficiary = beneficiary || recipientPhoneNumber || '';
-        let trustedStoreSlug = storeSlug || null;
-        let trustedClientType = clientType || 'Customers';
-        let trustedReferralLinkId = null;
-        let trustedReferralUserId = null;
-        if (storeSlug || referralToken) {
-            if (referralToken) {
-                const resolvedReferral = await resolveReferralToken(referralToken);
-                if (!resolvedReferral) return res.status(403).json({ message: 'Invalid referral link. Please reopen the store link.' });
-                if (storeSlug && resolvedReferral.store.storeSlug !== storeSlug && !(resolvedReferral.store.previousSlugs || []).includes(storeSlug)) {
-                    return res.status(403).json({ message: 'Referral link does not match this store.' });
-                }
-                trustedStoreSlug = resolvedReferral.store.storeSlug;
-                trustedClientType = resolvedReferral.link.clientType;
-                trustedReferralLinkId = resolvedReferral.link._id;
-                trustedReferralUserId = resolvedReferral.link.userId;
-            } else {
-                // No opaque referral context: never allow the browser to select a
-                // privileged category. Treat the visit as a customer and still verify
-                // the submitted amount against the customer's configured price.
-                trustedClientType = 'Customers';
-                const customerStore = await StoreSettings.findOne({ $or: [{ storeSlug }, { previousSlugs: storeSlug }] }).lean();
-                if (!customerStore) return res.status(404).json({ message: 'Store not found' });
-                trustedReferralUserId = customerStore.userId;
-            }
-        }
 
         if (!gatewayName || !phoneNumber || !amount || !resolvedPaymentNetwork || !resolvedOrderProvider) {
             return res.status(400).json({ message: 'Missing required fields' });
@@ -4175,24 +3948,12 @@ app.post('/api/payment/initiate', async (req, res) => {
             clientType: clientType || null
         });
 
-        const userId = trustedReferralUserId || await resolvePaymentUserId({
+        const userId = await resolvePaymentUserId({
             userId: req.user?.id || req.body.userId || null,
-            storeSlug: trustedStoreSlug,
-            metadata: { storeSlug: trustedStoreSlug }
+            storeSlug,
+            metadata: { storeSlug }
         });
         const resolvedPackageName = bundle_size || packageName || '';
-        if (trustedStoreSlug && trustedReferralUserId) {
-            const priceCheck = await validateReferralPrice({
-                userId: trustedReferralUserId,
-                clientType: trustedClientType,
-                provider: resolvedOrderProvider,
-                packageName: resolvedPackageName,
-                amount
-            });
-            if (!priceCheck.ok) {
-                return res.status(400).json({ message: priceCheck.reason, expectedAmount: priceCheck.expectedAmount || null });
-            }
-        }
         const result = await PaymentService.initiatePayment(gatewayName, {
             phoneNumber,
             amount,
@@ -4203,8 +3964,8 @@ app.post('/api/payment/initiate', async (req, res) => {
             packageName: resolvedPackageName,
             bundle_size: resolvedPackageName,
             userId,
-            storeSlug: trustedStoreSlug,
-            clientType: trustedClientType,
+            storeSlug,
+            clientType,
             guestSessionId: guestSessionId || null,
             beneficiary: resolvedBeneficiary,
             isUnverified: Boolean(req.body.isUnverified),
@@ -4212,9 +3973,8 @@ app.post('/api/payment/initiate', async (req, res) => {
                 userId,
                 packageName: resolvedPackageName,
                 bundle_size: resolvedPackageName,
-                storeSlug: trustedStoreSlug,
-                clientType: trustedClientType,
-                referralLinkId: trustedReferralLinkId,
+                storeSlug,
+                clientType,
                 guestSessionId: guestSessionId || null,
                 paymentNetwork: resolvedPaymentNetwork,
                 orderProvider: resolvedOrderProvider,
@@ -4248,83 +4008,87 @@ app.post('/api/payment/initiate', async (req, res) => {
         res.status(500).json({ message: err.message });
     }
 });
-// Verify an MTN beneficiary through the DataHub configuration marked for
-// unverified numbers. This route is used by the agent/admin verification tool.
-// Storefront checkout uses /api/orders/mtn/precheck for the Mamsco pre-check.
+// Verify a beneficiary (recipient) phone number with DataHub before allowing purchase.
+// Keeps the DataHub API key server-side — never exposed to the browser.
 app.post('/api/payment/verify-beneficiary', async (req, res) => {
     try {
-        const { phone, is_ported_number, isPortedNumber } = req.body || {};
-        const isPorted = is_ported_number !== undefined
-            ? is_ported_number
+        const { phone, is_ported_number, isPortedNumber } = req.body;
+        const resolvedIsPorted = (is_ported_number !== undefined) ? is_ported_number
             : (isPortedNumber !== undefined ? isPortedNumber : true);
 
         if (!phone) {
-            return res.status(400).json({ success: false, verified: false, message: 'phone is required' });
+            return res.status(400).json({ success: false, message: 'phone is required' });
         }
 
-        const provider = await Provider.findOne({ name: 'MTN' });
-        const config = (provider?.apiConfigs || []).find(c =>
-            c && c.enabled && c.forUnverifiedNumbers === true &&
-            String(c.baseUrl || '').toLowerCase().includes('datahubgh.com/api/external')
+        const response = await fetch(
+            'https://mamscoenteprise.com/api/orders/mtn/precheck',
+            {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    phoneNumbers: [phone]
+                })
+            }
         );
-        if (!config || !config.authHeaderValue) {
-            return res.status(503).json({
+        
+        const contentType = response.headers.get('content-type') || '';
+        
+        let result;
+        
+        if (contentType.includes('application/json')) {
+            result = await response.json();
+        } else {
+            const text = await response.text();
+        
+            console.error(
+                '[VerifyBeneficiary] Mamsco returned non-JSON:',
+                text.slice(0, 500)
+            );
+        
+            return res.status(502).json({
                 success: false,
-                verified: false,
-                message: 'The DataHub MTN verification API is not configured. Please contact an administrator.'
+                message: 'MTN verification service returned an invalid response.'
             });
         }
+        
+        console.log(
+            '[VerifyBeneficiary] Mamsco precheck response:',
+            response.status,
+            result
+        );
+        
+        const verification = result?.results?.[0];
 
-        const digits = String(phone).replace(/\D/g, '');
-        const nationalPhone = digits.startsWith('233') ? `0${digits.slice(3)}`
-            : (digits.length === 9 ? `0${digits}` : digits);
-        const baseUrl = String(config.baseUrl).replace(/\/+$/, '');
-        const endpoint = `${baseUrl}/purchases/verify-number`;
-        const headers = { 'Content-Type': 'application/json' };
-        headers[config.authHeaderName || 'X-API-Key'] = config.authHeaderValue;
-        for (const [key, value] of Object.entries(config.additionalHeaders || {})) {
-            if (value !== undefined && value !== null && String(key).trim()) headers[String(key).trim()] = String(value);
-        }
-
-        const response = await fetch(endpoint, {
-            method: 'POST',
-            headers,
-            body: JSON.stringify({ phone: nationalPhone, is_ported_number: Boolean(isPorted) })
-        });
-        const rawText = await response.text();
-        let result = {};
-        try { result = rawText ? JSON.parse(rawText) : {}; } catch (_) {
-            return res.status(502).json({ success: false, verified: false, message: 'DataHub returned an invalid response.' });
-        }
-
-        if (!response.ok || result.success === false) {
-            return res.status(200).json({
-                success: true,
-                verified: false,
-                message: result.message || result.error || 'This number is not currently verified. DataHub may submit it for approval.',
-                data: result.data || result
+        if (
+            !response.ok ||
+            verification?.valid !== true ||
+            verification?.known !== true
+        ) {
+            console.log(
+                '[VerifyBeneficiary] Verification failed:',
+                verification || result
+            );
+        
+            return res.status(response.ok ? 422 : (response.status || 400)).json({
+                success: false,
+                message: 'Number is not eligible for this offer'
             });
         }
-
-        const data = result.data || result;
-        const verificationFlag = [
-            result.verified, result.isVerified, result.is_verified, result.eligible,
-            data.verified, data.isVerified, data.is_verified, data.eligible,
-            data.isEligible, data.is_eligible, data.known
-        ].find(value => typeof value === 'boolean');
-        const verified = verificationFlag === true;
-
+        
+        console.log(
+            '[VerifyBeneficiary] Phone number verified successfully:',
+            phone
+        );
+        
         return res.json({
             success: true,
-            verified,
-            message: result.message || data.message || (verified
-                ? 'Phone number is verified.'
-                : 'DataHub did not confirm this number as verified. It may be awaiting beneficiary approval.'),
-            data
+            ...result
         });
     } catch (err) {
-        console.error('[DataHubVerifyBeneficiary] Verification request failed:', err.message);
-        return res.status(502).json({ success: false, verified: false, message: 'DataHub verification service is unavailable.' });
+        console.error('[VerifyBeneficiary] Verification request failed:', err.message);
+        res.status(500).json({ success: false, message: 'Verification service unavailable, please try again' });
     }
 });
 
@@ -4841,12 +4605,11 @@ app.get('/api/user/orders', auth, async (req, res) => {
             ? { $or: [{ userId: req.user.id }, { storeSlug: { $in: storeSlugs } }] }
             : { userId: req.user.id };
 
-        const orders = await Order.find(query).sort({ created: -1 }).lean();
-        const { current, historical } = await splitOrdersAtReconciliationCutoff(orders);
-        const visibleHistorical = historical.filter(order => !isPendingOrFailedStatus(order.status));
-        const visibleOrders = [...current, ...visibleHistorical]
-            .sort((a, b) => new Date(b.created || 0).getTime() - new Date(a.created || 0).getTime());
-        res.json(visibleOrders);
+        const orders = await Order.find(query)
+            .sort({ created: -1 })
+            .limit(50);
+
+        res.json(orders);
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
@@ -4861,16 +4624,11 @@ app.get('/api/user/transactions', auth, async (req, res) => {
             ? { $or: [{ userId: req.user.id }, { storeSlug: { $in: storeSlugs } }] }
             : { userId: req.user.id };
 
-        const allTransactions = await Transaction.find(query)
+        const transactions = await Transaction.find(query)
             .sort({ created: -1 })
-            .limit(200)
-            .lean();
-        const { current, historical } = await splitTransactionsAtReconciliationCutoff(allTransactions);
-        const visibleHistorical = historical.filter(txn => !isPendingOrFailedStatus(txn.status));
-        const visibleTransactions = [...current, ...visibleHistorical]
-            .sort((a, b) => new Date(b.created || 0).getTime() - new Date(a.created || 0).getTime());
+            .limit(50);
 
-        res.json(await enrichTransactionDescriptions(visibleTransactions.slice(0, 50)));
+        res.json(transactions);
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
@@ -5041,102 +4799,9 @@ app.get('/api/webhooks/xpresportal', handleXpresPortalWebhook);
 // manual fulfilment so a late status response cannot trigger duplicate routing.
 const PAYMENT_RECONCILIATION_GRACE_MS = 10 * 60 * 1000;
 
-// Clean-start boundary for the new payment reconciliation workflow.
-// Ghana uses UTC+00:00, so midnight on 17 October 2026 is represented by Z.
-const DEFAULT_PAYMENT_RECONCILIATION_START_AT = '2026-10-17T00:00:00.000Z';
-
-function getPaymentReconciliationCutoff() {
-    const configured = process.env.PAYMENT_RECONCILIATION_START_AT || DEFAULT_PAYMENT_RECONCILIATION_START_AT;
-    const parsed = new Date(configured);
-    return Number.isNaN(parsed.getTime())
-        ? new Date(DEFAULT_PAYMENT_RECONCILIATION_START_AT)
-        : parsed;
-}
-
-function isPendingOrFailedStatus(status) {
-    const normalized = String(status || '').trim().toLowerCase();
-    return normalized === 'pending' || normalized === 'failed';
-}
-
-// Classify normal Transaction records using the original linked payment attempt
-// time, not the time a reconciliation pass happened to create a placeholder.
-async function splitTransactionsAtReconciliationCutoff(transactions) {
-    const cutoff = getPaymentReconciliationCutoff();
-    const orderIds = [...new Set(transactions.map(txn => txn.orderId).filter(Boolean).map(String))];
-    const orders = orderIds.length
-        ? await Order.find({ _id: { $in: orderIds } }, { _id: 1, transactionId: 1, created: 1 }).lean()
-        : [];
-    const orderById = new Map(orders.map(order => [String(order._id), order]));
-    const paymentTransactionIds = [...new Set(orders.map(order => order.transactionId).filter(Boolean))];
-    const paymentAttempts = paymentTransactionIds.length
-        ? await PaymentTransaction.find({ transactionId: { $in: paymentTransactionIds } }, { transactionId: 1, initiatedAt: 1 }).lean()
-        : [];
-    const attemptById = new Map(paymentAttempts.map(attempt => [attempt.transactionId, attempt]));
-    const current = [];
-    const historical = [];
-
-    for (const transaction of transactions) {
-        const linkedOrder = transaction.orderId ? orderById.get(String(transaction.orderId)) : null;
-        const linkedAttempt = linkedOrder?.transactionId ? attemptById.get(linkedOrder.transactionId) : null;
-        // If a payment attempt is linked but its initiation time is missing,
-        // conservatively treat it as historical/uncertain instead of exposing it
-        // as a new record solely because reconciliation touched it recently.
-        const effectiveDate = linkedAttempt
-            ? linkedAttempt.initiatedAt
-            : (linkedOrder?.created || transaction.created || transaction.createdAt);
-        const isCurrent = effectiveDate && new Date(effectiveDate).getTime() >= cutoff.getTime();
-        (isCurrent ? current : historical).push(transaction);
-    }
-
-    return { current, historical, cutoff };
-}
-
-// Classify orders using the original payment initiation time when available.
-// This prevents a historical payment attempt reconciled today from appearing
-// as a new order just because its Order record was created today.
-async function splitOrdersAtReconciliationCutoff(orders) {
-    const cutoff = getPaymentReconciliationCutoff();
-    const transactionIds = [...new Set(
-        orders.map(order => order.transactionId).filter(Boolean)
-    )];
-
-    let paymentAttemptByTransactionId = new Map();
-    if (transactionIds.length) {
-        const paymentAttempts = await PaymentTransaction.find(
-            { transactionId: { $in: transactionIds } },
-            { transactionId: 1, initiatedAt: 1 }
-        ).lean();
-
-        paymentAttemptByTransactionId = new Map(
-            paymentAttempts.map(txn => [txn.transactionId, txn])
-        );
-    }
-
-    const current = [];
-    const historical = [];
-
-    for (const order of orders) {
-        const linkedAttempt = order.transactionId
-            ? paymentAttemptByTransactionId.get(order.transactionId)
-            : null;
-
-        // If a linked payment attempt exists but has no initiation timestamp,
-        // classify it as historical/uncertain rather than assuming it is new.
-        const effectiveDate = linkedAttempt
-            ? linkedAttempt.initiatedAt
-            : order.created;
-        const isCurrent = effectiveDate && new Date(effectiveDate).getTime() >= cutoff.getTime();
-
-        (isCurrent ? current : historical).push(order);
-    }
-
-    return { current, historical, cutoff };
-}
-
 function paymentReconciliationQuery(now = new Date()) {
     const staleBefore = new Date(now.getTime() - PAYMENT_RECONCILIATION_GRACE_MS);
     return {
-        initiatedAt: { $gte: getPaymentReconciliationCutoff() },
         $or: [
             {
                 status: { $in: ['success', 'failed', 'cancelled'] },
@@ -5303,7 +4968,7 @@ app.get('/api/cron/update-order-status', async (req, res) => {
 
         const attempts = await PaymentTransaction.find(paymentReconciliationQuery())
             .sort({ initiatedAt: 1 })
-            .limit(5);
+            .limit(50);
 
         let reconciled = 0;
         let pending = 0;
@@ -5359,7 +5024,7 @@ app.get('/api/cron/update-order-status', async (req, res) => {
         const linkedSuccesses = await PaymentTransaction.find({
             status: 'success',
             orderId: { $exists: true, $ne: null }
-        }).sort({ completedAt: -1, initiatedAt: -1 }).limit(10);
+        }).sort({ completedAt: -1, initiatedAt: -1 }).limit(100);
 
         for (const txn of linkedSuccesses) {
             try {
@@ -5429,7 +5094,7 @@ app.post('/api/orders/mtn/precheck', async (req, res) => {
         );
 
         const response = await fetch(
-            'https://mamscoenterprise.com/api/orders/mtn/precheck',
+            'https://mamscoenteprise.com/api/orders/mtn/precheck',
             {
                 method: 'POST',
 
@@ -5587,7 +5252,7 @@ app.get('/:slug/:clientType', async (req, res, next) => {
 });
 
 async function handleStorefrontSlug(slug, clientType, res, next) {
-    const destUrl    = `${FRONTEND_BASE}/Dashboard/dashboard2.html?store=${encodeURIComponent(slug)}`;
+    const destUrl    = `${FRONTEND_BASE}/Dashboard/dashboard2.html?store=${encodeURIComponent(slug)}&client=${encodeURIComponent(clientType)}`;
 
     let storeName = 'Data Shop';
     let storeDesc = 'Buy affordable data bundles here.';
