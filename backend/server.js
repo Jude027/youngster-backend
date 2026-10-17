@@ -3655,21 +3655,12 @@ app.put('/api/admin/provider-api-config/:providerName', auth, admin, async (req,
         if (!provider) return res.status(404).json({ message: 'Provider not found' });
 
         if (apiConfig) {
+            // Keep the legacy single config separate from the apiConfigs array.
+            // Syncing these fields can overwrite a separately configured provider.
             provider.apiConfig = {
                 ...provider.apiConfig,
                 ...apiConfig
             };
-        
-            // Keep the primary API config in sync.
-            // UniversalAPIHandler uses apiConfigs[0] for normal orders.
-            if (Array.isArray(provider.apiConfigs) && provider.apiConfigs.length > 0) {
-                provider.apiConfigs[0] = {
-                    ...provider.apiConfigs[0].toObject(),
-                    ...apiConfig
-                };
-        
-                provider.markModified('apiConfigs');
-            }
         }
         if (orderRouting) {
             const toNullableNumber = value => {
@@ -3700,6 +3691,7 @@ app.put('/api/admin/provider-api-config/:providerName', auth, admin, async (req,
             provider: {
                 name: provider.name,
                 apiConfig: provider.apiConfig,
+                apiConfigs: provider.apiConfigs,
                 orderRouting: provider.orderRouting,
                 packageMapping: provider.packageMapping
             }
@@ -3830,7 +3822,16 @@ app.get('/api/admin/check-order-status/:providerName/:reference', auth, async (r
 // Get provider balance from external API
 app.get('/api/admin/provider-balance/:providerName', auth, admin, async (req, res) => {
     try {
-        const result = await UniversalAPIHandler.getBalance(req.params.providerName);
+        const rawIndex = req.query.configIndex;
+        let configIndex = null;
+        if (rawIndex !== undefined) {
+            const parsedIndex = Number(rawIndex);
+            if (!Number.isInteger(parsedIndex) || parsedIndex < -1) {
+                return res.status(400).json({ success: false, message: 'Invalid configuration index' });
+            }
+            configIndex = parsedIndex;
+        }
+        const result = await UniversalAPIHandler.getBalance(req.params.providerName, configIndex);
         res.json(result);
     } catch (err) {
         res.status(500).json({ message: err.message });
