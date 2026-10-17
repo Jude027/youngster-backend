@@ -1324,11 +1324,30 @@ async function submitOrderToProvider(order, orderData) {
             };
         }
 
-        // Unverified numbers (failed beneficiary check) — skip all automated
-        // routing and leave the order as pending for manual fulfilment.
+        // Unverified MTN numbers must go to the configured fallback API, never
+        // WhatsApp and never the primary Mamsco config. Force API routing before
+        // capacity-based routing rules are evaluated.
+        if (orderData.isUnverified) routing = 'api';
+
+        // Unverified MTN numbers are intentionally routed to the API config
+        // marked forUnverifiedNumbers. UniversalAPIHandler fails closed if that
+        // config is missing; it must never fall back to Mamsco for this order.
         if (orderData.isUnverified) {
-            console.log(`[ProviderSubmit] Number is unverified — skipping API/WhatsApp routing, order left pending for manual fulfilment`);
-            return { success: true, message: 'Order created. Unverified number — requires manual fulfilment.', automated: false };
+            const hasFallback = Array.isArray(provider?.apiConfigs) &&
+                provider.apiConfigs.some(c => c && c.enabled && c.forUnverifiedNumbers === true);
+            if (!hasFallback) {
+                console.error('[ProviderSubmit] Unverified MTN order has no enabled fallback API config', {
+                    orderId: order?._id?.toString(), providerName
+                });
+                return {
+                    success: false,
+                    message: 'This MTN number needs the configured unverified-number API. Please contact support.',
+                    actionRequired: 'UNVERIFIED_API_NOT_CONFIGURED'
+                };
+            }
+            console.log('[ProviderSubmit] Unverified number detected; using the enabled fallback API config', {
+                orderId: order?._id?.toString(), providerName
+            });
         }
 
         // Evaluate capacity-based routing rules if mode is 'auto'
@@ -1366,7 +1385,7 @@ async function submitOrderToProvider(order, orderData) {
             // Try API first
             try {
                 result = await UniversalAPIHandler.processOrder(providerName, orderData);
-                if (routing === 'auto' && !result?.success && shouldFallbackToWhatsApp(result)) {
+                if (!orderData.isUnverified && routing === 'auto' && !result?.success && shouldFallbackToWhatsApp(result)) {
                     console.log(`[ProviderSubmit] API unavailable for ${providerName}, falling back to WhatsApp Notifier`, {
                         orderId: order?._id?.toString(),
                         reason: result?.message || result?.error || 'Unknown API failure'
@@ -1377,7 +1396,7 @@ async function submitOrderToProvider(order, orderData) {
                 }
             } catch (err) {
                 // Fallback to WhatsApp if API is not configured or specifically auto-fallback
-                if (routing === 'auto' && shouldFallbackToWhatsApp(err)) {
+                if (!orderData.isUnverified && routing === 'auto' && shouldFallbackToWhatsApp(err)) {
                     console.log(`[ProviderSubmit] API not configured for ${providerName}, falling back to WhatsApp Notifier`, {
                         orderId: order?._id?.toString(),
                         reason: err.message
@@ -3692,7 +3711,7 @@ app.put('/api/admin/provider-api-config/:providerName', auth, admin, async (req,
 
 // ==================== PROVIDER API CONFIGS ARRAY (multi-config) ====================
 // These endpoints manage the `apiConfigs` array on a provider, enabling multiple
-// API configurations per provider (e.g. DataHub for verified numbers, iGet for unverified).
+// API configurations per provider (e.g. Mamsco for verified MTN orders, DataHub for unverified MTN orders).
 
 // POST — add a new config entry to the array
 app.post('/api/admin/provider-api-configs/:providerName', auth, admin, async (req, res) => {
@@ -4228,87 +4247,83 @@ app.post('/api/payment/initiate', async (req, res) => {
         res.status(500).json({ message: err.message });
     }
 });
-// Verify a beneficiary (recipient) phone number with DataHub before allowing purchase.
-// Keeps the DataHub API key server-side — never exposed to the browser.
+// Verify an MTN beneficiary through the DataHub configuration marked for
+// unverified numbers. This route is used by the agent/admin verification tool.
+// Storefront checkout uses /api/orders/mtn/precheck for the Mamsco pre-check.
 app.post('/api/payment/verify-beneficiary', async (req, res) => {
     try {
-        const { phone, is_ported_number, isPortedNumber } = req.body;
-        const resolvedIsPorted = (is_ported_number !== undefined) ? is_ported_number
+        const { phone, is_ported_number, isPortedNumber } = req.body || {};
+        const isPorted = is_ported_number !== undefined
+            ? is_ported_number
             : (isPortedNumber !== undefined ? isPortedNumber : true);
 
         if (!phone) {
-            return res.status(400).json({ success: false, message: 'phone is required' });
+            return res.status(400).json({ success: false, verified: false, message: 'phone is required' });
         }
 
-        const response = await fetch(
-            'https://mamscoenterprise.com/api/orders/mtn/precheck',
-            {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    phoneNumbers: [phone]
-                })
-            }
+        const provider = await Provider.findOne({ name: 'MTN' });
+        const config = (provider?.apiConfigs || []).find(c =>
+            c && c.enabled && c.forUnverifiedNumbers === true &&
+            String(c.baseUrl || '').toLowerCase().includes('datahubgh.com/api/external')
         );
-        
-        const contentType = response.headers.get('content-type') || '';
-        
-        let result;
-        
-        if (contentType.includes('application/json')) {
-            result = await response.json();
-        } else {
-            const text = await response.text();
-        
-            console.error(
-                '[VerifyBeneficiary] Mamsco returned non-JSON:',
-                text.slice(0, 500)
-            );
-        
-            return res.status(502).json({
+        if (!config || !config.authHeaderValue) {
+            return res.status(503).json({
                 success: false,
-                message: 'MTN verification service returned an invalid response.'
+                verified: false,
+                message: 'The DataHub MTN verification API is not configured. Please contact an administrator.'
             });
         }
-        
-        console.log(
-            '[VerifyBeneficiary] Mamsco precheck response:',
-            response.status,
-            result
-        );
-        
-        const verification = result?.results?.[0];
 
-        if (
-            !response.ok ||
-            verification?.valid !== true ||
-            verification?.known !== true
-        ) {
-            console.log(
-                '[VerifyBeneficiary] Verification failed:',
-                verification || result
-            );
-        
-            return res.status(response.ok ? 422 : (response.status || 400)).json({
-                success: false,
-                message: 'Number is not eligible for this offer'
+        const digits = String(phone).replace(/\D/g, '');
+        const nationalPhone = digits.startsWith('233') ? `0${digits.slice(3)}`
+            : (digits.length === 9 ? `0${digits}` : digits);
+        const baseUrl = String(config.baseUrl).replace(/\/+$/, '');
+        const endpoint = `${baseUrl}/purchases/verify-number`;
+        const headers = { 'Content-Type': 'application/json' };
+        headers[config.authHeaderName || 'X-API-Key'] = config.authHeaderValue;
+        for (const [key, value] of Object.entries(config.additionalHeaders || {})) {
+            if (value !== undefined && value !== null && String(key).trim()) headers[String(key).trim()] = String(value);
+        }
+
+        const response = await fetch(endpoint, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ phone: nationalPhone, is_ported_number: Boolean(isPorted) })
+        });
+        const rawText = await response.text();
+        let result = {};
+        try { result = rawText ? JSON.parse(rawText) : {}; } catch (_) {
+            return res.status(502).json({ success: false, verified: false, message: 'DataHub returned an invalid response.' });
+        }
+
+        if (!response.ok || result.success === false) {
+            return res.status(200).json({
+                success: true,
+                verified: false,
+                message: result.message || result.error || 'This number is not currently verified. DataHub may submit it for approval.',
+                data: result.data || result
             });
         }
-        
-        console.log(
-            '[VerifyBeneficiary] Phone number verified successfully:',
-            phone
-        );
-        
+
+        const data = result.data || result;
+        const verificationFlag = [
+            result.verified, result.isVerified, result.is_verified, result.eligible,
+            data.verified, data.isVerified, data.is_verified, data.eligible,
+            data.isEligible, data.is_eligible, data.known
+        ].find(value => typeof value === 'boolean');
+        const verified = verificationFlag === true;
+
         return res.json({
             success: true,
-            ...result
+            verified,
+            message: result.message || data.message || (verified
+                ? 'Phone number is verified.'
+                : 'DataHub did not confirm this number as verified. It may be awaiting beneficiary approval.'),
+            data
         });
     } catch (err) {
-        console.error('[VerifyBeneficiary] Verification request failed:', err.message);
-        res.status(500).json({ success: false, message: 'Verification service unavailable, please try again' });
+        console.error('[DataHubVerifyBeneficiary] Verification request failed:', err.message);
+        return res.status(502).json({ success: false, verified: false, message: 'DataHub verification service is unavailable.' });
     }
 });
 
