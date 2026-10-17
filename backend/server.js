@@ -1607,9 +1607,14 @@ app.get('/api/orders', async (req, res) => {
             query = { storeSlug: req.query.storeSlug };
         }
 
+        // Hide only historical Pending/Failed records associated with the old
+        // reconciliation backlog. Genuine new orders in any status remain visible.
         const orders = await Order.find(query).sort({ created: -1 }).limit(200).lean();
-        const { current } = await splitOrdersAtReconciliationCutoff(orders);
-        res.json(current.slice(0, 50));
+        const { current, historical } = await splitOrdersAtReconciliationCutoff(orders);
+        const visibleHistorical = historical.filter(order => !isPendingOrFailedStatus(order.status));
+        const visibleOrders = [...current, ...visibleHistorical]
+            .sort((a, b) => new Date(b.created || 0).getTime() - new Date(a.created || 0).getTime());
+        res.json(visibleOrders.slice(0, 50));
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
@@ -1726,11 +1731,19 @@ app.get('/api/transactions', async (req, res) => {
                 { description: /Bundle Purchase/i }
             ]
         };
-        const orderTransactionQuery = Object.keys(query).length
-            ? { $and: [query, orderTransactionFilter] }
-            : orderTransactionFilter;
+        const orderTransactionQuery = {
+            $and: [
+                ...(Object.keys(query).length ? [query] : []),
+                orderTransactionFilter
+            ]
+        };
 
-        const transactions = await Transaction.find(orderTransactionQuery).sort({ created: -1 });
+        const allTransactions = await Transaction.find(orderTransactionQuery).sort({ created: -1 }).limit(300).lean();
+        const { current, historical } = await splitTransactionsAtReconciliationCutoff(allTransactions);
+        const visibleHistorical = historical.filter(txn => !isPendingOrFailedStatus(txn.status));
+        const transactions = [...current, ...visibleHistorical]
+            .sort((a, b) => new Date(b.created || 0).getTime() - new Date(a.created || 0).getTime())
+            .slice(0, 200);
         console.log('[Transactions] Returning order transaction records', {
             userId: userId || null,
             storeSlug: req.query.storeSlug || null,
@@ -1806,8 +1819,12 @@ app.get('/api/guest/transactions', async (req, res) => {
         const txns = await Transaction.find({
             guestSessionId: { $eq: guestSessionId, $ne: null, $exists: true },
             storeSlug: store
-        }).sort({ created: -1 }).limit(50).lean();
-        res.json(txns);
+        }).sort({ created: -1 }).limit(200).lean();
+        const { current, historical } = await splitTransactionsAtReconciliationCutoff(txns);
+        const visibleHistorical = historical.filter(txn => !isPendingOrFailedStatus(txn.status));
+        const visibleTxns = [...current, ...visibleHistorical]
+            .sort((a, b) => new Date(b.created || 0).getTime() - new Date(a.created || 0).getTime());
+        res.json(visibleTxns.slice(0, 50));
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -2886,12 +2903,13 @@ app.get('/api/admin/orders', auth, admin, async (req, res) => {
             return obj;
         });
 
-        const { current, historical, cutoff } = await splitOrdersAtReconciliationCutoff(enriched);
-        const view = req.query.view === 'history' ? 'history' : 'current';
-        const selected = view === 'history' ? historical : current;
-
-        res.set('X-Order-View-Cutoff', cutoff.toISOString());
-        res.json(selected);
+        // Hide only historical Pending/Failed records associated with the old
+        // reconciliation backlog. Keep new incoming orders visible in every status.
+        const { current, historical } = await splitOrdersAtReconciliationCutoff(enriched);
+        const visibleHistorical = historical.filter(order => !isPendingOrFailedStatus(order.status));
+        const visibleOrders = [...current, ...visibleHistorical]
+            .sort((a, b) => new Date(b.created || 0).getTime() - new Date(a.created || 0).getTime());
+        res.json(visibleOrders);
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
@@ -2922,8 +2940,12 @@ app.put('/api/admin/orders/:id', auth, admin, async (req, res) => {
 
 app.get('/api/admin/transactions', auth, admin, async (req, res) => {
     try {
-        const transactions = await Transaction.find().populate('userId', 'username email').sort({ created: -1 });
-        res.json(transactions);
+        const allTransactions = await Transaction.find().populate('userId', 'username email').sort({ created: -1 }).limit(1000).lean();
+        const { current, historical } = await splitTransactionsAtReconciliationCutoff(allTransactions);
+        const visibleHistorical = historical.filter(txn => !isPendingOrFailedStatus(txn.status));
+        const visibleTransactions = [...current, ...visibleHistorical]
+            .sort((a, b) => new Date(b.created || 0).getTime() - new Date(a.created || 0).getTime());
+        res.json(visibleTransactions);
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
@@ -4611,8 +4633,11 @@ app.get('/api/user/orders', auth, async (req, res) => {
             : { userId: req.user.id };
 
         const orders = await Order.find(query).sort({ created: -1 }).limit(200).lean();
-        const { current } = await splitOrdersAtReconciliationCutoff(orders);
-        res.json(current.slice(0, 50));
+        const { current, historical } = await splitOrdersAtReconciliationCutoff(orders);
+        const visibleHistorical = historical.filter(order => !isPendingOrFailedStatus(order.status));
+        const visibleOrders = [...current, ...visibleHistorical]
+            .sort((a, b) => new Date(b.created || 0).getTime() - new Date(a.created || 0).getTime());
+        res.json(visibleOrders.slice(0, 50));
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
@@ -4627,11 +4652,16 @@ app.get('/api/user/transactions', auth, async (req, res) => {
             ? { $or: [{ userId: req.user.id }, { storeSlug: { $in: storeSlugs } }] }
             : { userId: req.user.id };
 
-        const transactions = await Transaction.find(query)
+        const allTransactions = await Transaction.find(query)
             .sort({ created: -1 })
-            .limit(50);
+            .limit(200)
+            .lean();
+        const { current, historical } = await splitTransactionsAtReconciliationCutoff(allTransactions);
+        const visibleHistorical = historical.filter(txn => !isPendingOrFailedStatus(txn.status));
+        const visibleTransactions = [...current, ...visibleHistorical]
+            .sort((a, b) => new Date(b.created || 0).getTime() - new Date(a.created || 0).getTime());
 
-        res.json(transactions);
+        res.json(visibleTransactions.slice(0, 50));
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
@@ -4812,6 +4842,44 @@ function getPaymentReconciliationCutoff() {
     return Number.isNaN(parsed.getTime())
         ? new Date(DEFAULT_PAYMENT_RECONCILIATION_START_AT)
         : parsed;
+}
+
+function isPendingOrFailedStatus(status) {
+    const normalized = String(status || '').trim().toLowerCase();
+    return normalized === 'pending' || normalized === 'failed';
+}
+
+// Classify normal Transaction records using the original linked payment attempt
+// time, not the time a reconciliation pass happened to create a placeholder.
+async function splitTransactionsAtReconciliationCutoff(transactions) {
+    const cutoff = getPaymentReconciliationCutoff();
+    const orderIds = [...new Set(transactions.map(txn => txn.orderId).filter(Boolean).map(String))];
+    const orders = orderIds.length
+        ? await Order.find({ _id: { $in: orderIds } }, { _id: 1, transactionId: 1, created: 1 }).lean()
+        : [];
+    const orderById = new Map(orders.map(order => [String(order._id), order]));
+    const paymentTransactionIds = [...new Set(orders.map(order => order.transactionId).filter(Boolean))];
+    const paymentAttempts = paymentTransactionIds.length
+        ? await PaymentTransaction.find({ transactionId: { $in: paymentTransactionIds } }, { transactionId: 1, initiatedAt: 1 }).lean()
+        : [];
+    const attemptById = new Map(paymentAttempts.map(attempt => [attempt.transactionId, attempt]));
+    const current = [];
+    const historical = [];
+
+    for (const transaction of transactions) {
+        const linkedOrder = transaction.orderId ? orderById.get(String(transaction.orderId)) : null;
+        const linkedAttempt = linkedOrder?.transactionId ? attemptById.get(linkedOrder.transactionId) : null;
+        // If a payment attempt is linked but its initiation time is missing,
+        // conservatively treat it as historical/uncertain instead of exposing it
+        // as a new record solely because reconciliation touched it recently.
+        const effectiveDate = linkedAttempt
+            ? linkedAttempt.initiatedAt
+            : (linkedOrder?.created || transaction.created || transaction.createdAt);
+        const isCurrent = effectiveDate && new Date(effectiveDate).getTime() >= cutoff.getTime();
+        (isCurrent ? current : historical).push(transaction);
+    }
+
+    return { current, historical, cutoff };
 }
 
 // Classify orders using the original payment initiation time when available.
