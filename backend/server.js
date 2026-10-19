@@ -4241,7 +4241,7 @@ app.post('/api/payment/verify-beneficiary', async (req, res) => {
         }
 
         const response = await fetch(
-            'https://mamscoenterprise.com/api/orders/mtn/precheck',
+            'https://mamscoenteprise.com/api/orders/mtn/precheck',
             {
                 method: 'POST',
                 headers: {
@@ -5413,7 +5413,7 @@ app.post('/api/orders/mtn/precheck', async (req, res) => {
         );
 
         const response = await fetch(
-            'https://mamscoenterprise.com/api/orders/mtn/precheck',
+            'https://mamscoenteprise.com/api/orders/mtn/precheck',
             {
                 method: 'POST',
 
