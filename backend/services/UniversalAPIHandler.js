@@ -5,25 +5,23 @@
 const Provider = require('../models/Provider');
 const ProviderAPILog = require('../models/ProviderAPILog');
 
-function getActiveApiConfig(provider, orderData = null) {
+function getActiveApiConfig(provider) {
     const configs = Array.isArray(provider.apiConfigs) ? provider.apiConfigs : [];
-    const isUnverified = orderData?.isUnverified === true;
 
-    // Unverified MTN orders must use only the explicitly marked fallback API.
-    // Never silently send these orders to the primary Mamsco configuration.
-    if (isUnverified) {
-        return configs.find(c => c && c.enabled && c.forUnverifiedNumbers === true) || null;
-    }
+    // The PRIMARY config is always index 0 (the first one in the array).
+    // This is what the admin sees as "[Primary] Default" in the dropdown.
+    // It handles VERIFIED numbers — DataHub for MTN, XpresPortal for AT Ishare etc.
+    // Secondary configs (index 1, 2...) are for special routing only and are
+    // NOT used for standard order processing.
+    const primaryConfig = configs.find((c, i) => c && c.enabled && i === 0);
+    if (primaryConfig) return primaryConfig;
 
-    // Normal/verified orders use the primary config, excluding fallback-only configs.
-    const primaryConfig = configs[0];
-    if (primaryConfig?.enabled && primaryConfig.forUnverifiedNumbers !== true) return primaryConfig;
+    // If index-0 is not enabled, try the first enabled config regardless of position
+    const firstEnabled = configs.find(c => c && c.enabled);
+    if (firstEnabled) return firstEnabled;
 
-    const firstNormalConfig = configs.find(c => c && c.enabled && c.forUnverifiedNumbers !== true);
-    if (firstNormalConfig) return firstNormalConfig;
-
-    // Keep legacy single-config support for providers that do not use apiConfigs.
-    if (provider.apiConfig?.enabled && provider.apiConfig.forUnverifiedNumbers !== true) return provider.apiConfig;
+    // Fall back to the legacy single apiConfig field
+    if (provider.apiConfig?.enabled) return provider.apiConfig;
 
     return null;
 }
@@ -75,7 +73,7 @@ class UniversalAPIHandler {
                 throw new Error(`Provider ${providerName} not found`);
             }
 
-            const activeApiConfig = getActiveApiConfig(provider, orderData);
+            const activeApiConfig = getActiveApiConfig(provider);
             if (!activeApiConfig) {
                 throw new Error(`API not configured for provider ${providerName}`);
             }
@@ -412,18 +410,13 @@ class UniversalAPIHandler {
             };
         }
 
-        // DataHub's external API expects { networkKey, recipient, capacity }.
-        // This default lets an admin configure the DataHub endpoint and API key
-        // without having to hand-build a custom field map. Explicit mappings win.
-        const isDataHub = String(config?.baseUrl || '').toLowerCase().includes('datahubgh.com/api/external');
-        const defaultMapping = isDataHub
-            ? { network: 'networkKey', phoneNumber: 'recipient', capacity: 'capacity' }
-            : {
-                network: 'network',
-                phoneNumber: 'msisdn',
-                capacity: 'capacity',
-                reference: 'reference'
-            };
+        // Default mappings if not provided
+        const defaultMapping = {
+            network: 'network',
+            phoneNumber: 'msisdn',
+            capacity: 'capacity',
+            reference: 'reference'
+        };
 
         const actualMapping = mapping && Object.keys(mapping).length > 0 ? mapping : defaultMapping;
 
@@ -433,9 +426,7 @@ class UniversalAPIHandler {
         // to the same entry — preventing the "No active bundle found" error.
         let apiCapacity = orderData.capacity;
         let pkgMap = null;
-        // DataHub expects the actual capacity (e.g. 2 for 2GB), not provider-specific
-        // package IDs that may exist in the shared MTN package mapping.
-        if (!isDataHub && packageMapping && packageMapping.length > 0) {
+        if (packageMapping && packageMapping.length > 0) {
             pkgMap = this.findPackageMap(packageMapping, orderData.packageName);
             if (!pkgMap && orderData.capacity) {
                 // Secondary fallback: match by raw capacity value
@@ -922,23 +913,6 @@ class UniversalAPIHandler {
             };
         }
 
-        // DataHub may return HTTP 200 for a business-level rejection. Honour its
-        // explicit success flag so a rejected purchase is never marked successful.
-        if (String(config?.baseUrl || '').toLowerCase().includes('datahubgh.com/api/external')) {
-            const body = response.body || {};
-            const payload = body.data || body;
-            const success = response.status >= 200 && response.status < 300 && body.success === true;
-            return {
-                success,
-                message: body.message || body.error || payload.message || (success ? 'Order accepted by DataHub' : 'DataHub rejected the order'),
-                data: payload,
-                reference: body.reference || payload.reference || payload.orderNumber || payload.orderId,
-                orderId: body.orderId || payload.orderId || payload.orderNumber,
-                orderStatus: payload.status || body.status,
-                status: response.status
-            };
-        }
-
         // Declare all variables before use
         const successField = config.successField || 'success';
         const dataField = config.dataField || '';
@@ -1241,7 +1215,7 @@ class UniversalAPIHandler {
     /**
      * Get wallet balance from external API
      */
-    static async getBalance(providerName, configIndex = null) {
+    static async getBalance(providerName) {
         try {
             const provider = await Provider.findOne({ name: providerName });
     
@@ -1249,23 +1223,10 @@ class UniversalAPIHandler {
                 throw new Error('Provider not found');
             }
     
-            let config;
-            if (configIndex === -1) {
-                config = provider.apiConfig;
-            } else if (Number.isInteger(configIndex) && configIndex >= 0) {
-                config = Array.isArray(provider.apiConfigs) ? provider.apiConfigs[configIndex] : null;
-                if (!config) {
-                    throw new Error(`API configuration index ${configIndex} was not found`);
-                }
-            } else {
-                config = getActiveApiConfig(provider);
-            }
+            const config = getActiveApiConfig(provider);
     
             if (!config) {
                 throw new Error('Provider API configuration not found');
-            }
-            if (config.enabled === false) {
-                throw new Error('The selected API configuration is disabled. Enable it before testing the connection.');
             }
     
             const isSPFastITIShare =
