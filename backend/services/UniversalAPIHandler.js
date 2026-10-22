@@ -5,8 +5,23 @@
 const Provider = require('../models/Provider');
 const ProviderAPILog = require('../models/ProviderAPILog');
 
-function getActiveApiConfig(provider) {
+function getActiveApiConfig(provider, requestedConfigName = null) {
     const configs = Array.isArray(provider.apiConfigs) ? provider.apiConfigs : [];
+
+    // An explicitly selected route (validated and persisted by the backend) must
+    // use that exact enabled config. Never silently fall back to the primary API.
+    if (requestedConfigName) {
+        const requested = String(requestedConfigName).trim().toLowerCase();
+        const matchingConfig = configs.find(config =>
+            config && config.enabled === true &&
+            String(config.name || '').trim().toLowerCase() === requested
+        );
+        if (matchingConfig) return matchingConfig;
+
+        const legacyMatches = provider.apiConfig?.enabled === true &&
+            String(provider.apiConfig.name || '').trim().toLowerCase() === requested;
+        return legacyMatches ? provider.apiConfig : null;
+    }
 
     // The PRIMARY config is always index 0 (the first one in the array).
     // This is what the admin sees as "[Primary] Default" in the dropdown.
@@ -73,9 +88,11 @@ class UniversalAPIHandler {
                 throw new Error(`Provider ${providerName} not found`);
             }
 
-            const activeApiConfig = getActiveApiConfig(provider);
+            const activeApiConfig = getActiveApiConfig(provider, orderData.orderApiConfig || null);
             if (!activeApiConfig) {
-                throw new Error(`API not configured for provider ${providerName}`);
+                throw new Error(orderData.orderApiConfig
+                    ? `Requested API configuration "${orderData.orderApiConfig}" is not enabled for provider ${providerName}`
+                    : `API not configured for provider ${providerName}`);
             }
 
             // Build API request
@@ -157,6 +174,53 @@ class UniversalAPIHandler {
         const baseUrl = this.cleanBaseUrl(sanitizedConfig.baseUrl);
         const endpoint = this.cleanEndpoint(sanitizedConfig.orderEndpoint);
         const url = `${baseUrl}${endpoint}`;
+
+        // DataMart requires a specific MTN payload and an idempotency header.
+        // Keep this special case scoped to its hostname so all other providers
+        // continue using the existing generic payload mapper.
+        let isDataMart = false;
+        try {
+            isDataMart = new URL(baseUrl).hostname.toLowerCase() === 'api.datamartgh.shop';
+        } catch (_) { }
+
+        if (isDataMart) {
+            const apiKey = String(sanitizedConfig.authHeaderValue || config.apiKey || '').trim();
+            if (!apiKey) throw new Error('DataMart API key is missing from the selected API configuration');
+
+            const rawCapacity = orderData.capacity !== undefined && orderData.capacity !== null
+                ? orderData.capacity
+                : orderData.packageName;
+            const capacity = Number.parseFloat(String(rawCapacity).match(/^(\d+(?:\.\d+)?)/)?.[1] ?? rawCapacity);
+            if (!Number.isFinite(capacity) || capacity <= 0) {
+                throw new Error(`Invalid bundle capacity for DataMart: ${rawCapacity}`);
+            }
+
+            const rawReference = orderData.reference || orderData.orderId || orderData._id || orderData.id;
+            if (!rawReference) throw new Error('A stable order reference is required for DataMart idempotency');
+            const idempotencyKey = String(rawReference).replace(/[^A-Za-z0-9._:-]/g, '-').slice(0, 100);
+            const phoneNumber = formatGhanaPhone(orderData.phoneNumber, 'national');
+            if (!/^\d{10}$/.test(phoneNumber)) throw new Error('A valid 10-digit beneficiary is required for DataMart');
+
+            return {
+                url,
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                    'Origin': process.env.BACKEND_ORIGIN || 'https://youngster-backend.vercel.app',
+                    'Referer': process.env.BACKEND_ORIGIN || 'https://youngster-backend.vercel.app',
+                    'X-API-Key': apiKey,
+                    'X-Idempotency-Key': idempotencyKey
+                },
+                body: JSON.stringify({
+                    phoneNumber,
+                    network: sanitizedConfig.networkKey || 'YELLO',
+                    capacity,
+                    gateway: 'wallet'
+                }),
+                fullConfig: sanitizedConfig
+            };
+        }
 
         // Map order data to API payload
         const mappedPayload = this.mapPayload(orderData, config.requestPayloadMapping, provider.packageMapping, sanitizedConfig);
@@ -797,6 +861,28 @@ class UniversalAPIHandler {
     static parseAPIResponse(provider, response, activeApiConfig = null) {
         const config = activeApiConfig || getActiveApiConfig(provider) || provider.apiConfig || {};
 
+        const isDataMart = String(config?.baseUrl || '').toLowerCase().includes('api.datamartgh.shop');
+        if (isDataMart) {
+            const body = response.body || {};
+            const bodyData = body.data || body.order || body;
+            const apiStatus = String(body.status || '').toLowerCase();
+            const orderStatus = String(bodyData.orderStatus || bodyData.status || '').toLowerCase();
+            const failedStatuses = ['failed', 'failure', 'rejected', 'error', 'cancelled', 'canceled'];
+            const acceptedStatuses = ['success', 'successful', 'accepted', 'queued', 'pending', 'processing', 'completed', 'complete'];
+            const explicitlyFailed = failedStatuses.includes(apiStatus) || failedStatuses.includes(orderStatus);
+            const isSuccess = response.status >= 200 && response.status < 300 && !explicitlyFailed &&
+                (body.success === true || acceptedStatuses.includes(apiStatus) || acceptedStatuses.includes(orderStatus));
+            return {
+                success: isSuccess,
+                message: body.message || bodyData.message || (isSuccess ? 'DataMart accepted the order.' : 'DataMart order failed.'),
+                data: bodyData,
+                reference: body.reference || bodyData.reference || bodyData.orderReference || bodyData.clientReference || bodyData.id,
+                orderId: body.orderId || bodyData.orderId || bodyData.orderNumber || bodyData.id || bodyData.reference,
+                orderStatus: bodyData.orderStatus || bodyData.status || apiStatus,
+                status: response.status
+            };
+        }
+
         const isSPFastITIShare =
             String(provider?.name || '').toLowerCase().includes('ishare') &&
             String(config?.baseUrl || '').toLowerCase().includes('spfastit');
@@ -980,7 +1066,26 @@ class UniversalAPIHandler {
     static async checkOrderStatus(providerName, reference) {
         try {
             const provider = await Provider.findOne({ name: providerName });
-            const config = provider ? getActiveApiConfig(provider) : null;
+            let config = provider ? getActiveApiConfig(provider) : null;
+
+            if (provider) {
+                const matchingLog = await ProviderAPILog.findOne({
+                    providerId: provider._id,
+                    apiReference: String(reference),
+                    apiEndpoint: /api\.datamartgh\.shop/i
+                }).sort({ createdAt: -1 }).lean();
+                if (matchingLog) {
+                    const availableConfigs = [
+                        ...(Array.isArray(provider.apiConfigs) ? provider.apiConfigs : []),
+                        provider.apiConfig
+                    ].filter(Boolean);
+                    const dataMartConfig = availableConfigs.find(item =>
+                        item && item.enabled === true &&
+                        String(item.baseUrl || '').toLowerCase().includes('api.datamartgh.shop')
+                    );
+                    if (dataMartConfig) config = dataMartConfig;
+                }
+            }
     
             if (!provider || !config) {
                 throw new Error('Provider or API configuration not found');
@@ -1215,7 +1320,7 @@ class UniversalAPIHandler {
     /**
      * Get wallet balance from external API
      */
-    static async getBalance(providerName) {
+    static async getBalance(providerName, configIndex = null) {
         try {
             const provider = await Provider.findOne({ name: providerName });
     
@@ -1223,7 +1328,24 @@ class UniversalAPIHandler {
                 throw new Error('Provider not found');
             }
     
-            const config = getActiveApiConfig(provider);
+            let config;
+            if (configIndex !== null && configIndex !== undefined && configIndex !== '') {
+                const index = Number(configIndex);
+                if (!Number.isInteger(index) || index < -1) {
+                    throw new Error('Invalid API configuration index');
+                }
+                // The admin UI passes the selected configuration index when testing.
+                // Test that exact config, including a disabled config being prepared,
+                // instead of accidentally testing the primary API.
+                config = index === -1
+                    ? provider.apiConfig
+                    : (Array.isArray(provider.apiConfigs) ? provider.apiConfigs[index] : null);
+                if (!config || !String(config.baseUrl || '').trim()) {
+                    throw new Error('Selected API configuration not found or has no base URL');
+                }
+            } else {
+                config = getActiveApiConfig(provider);
+            }
     
             if (!config) {
                 throw new Error('Provider API configuration not found');
