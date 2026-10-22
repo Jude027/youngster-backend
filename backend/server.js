@@ -93,6 +93,68 @@ app.use((req, res, next) => {
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your_secret_key';
 
+// DataMart fallback configuration and short-lived proof that a beneficiary
+// passed DataMart's non-charging verification endpoint. The API key remains in
+// the existing admin-managed Provider configuration, never in browser code.
+function normalizeGhanaLocalPhone(phoneNumber = '') {
+    const digits = String(phoneNumber || '').replace(/\D/g, '');
+    if (digits.startsWith('233') && digits.length === 12) return `0${digits.slice(3)}`;
+    if (digits.length === 9) return `0${digits}`;
+    return digits;
+}
+
+function getDataMartFallbackConfig(provider, requiredConfigName = null) {
+    const configs = [
+        ...(Array.isArray(provider?.apiConfigs) ? provider.apiConfigs : []),
+        provider?.apiConfig
+    ].filter(Boolean);
+
+    return configs.find(config => {
+        if (config.enabled !== true || config.forUnverifiedNumbers !== true) return false;
+        if (!/datamart/i.test(String(config.name || ''))) return false;
+        if (requiredConfigName && String(config.name || '').trim() !== requiredConfigName) return false;
+        if (!String(config.authHeaderValue || config.apiKey || '').trim()) return false;
+
+        try {
+            return new URL(String(config.baseUrl || '')).hostname.toLowerCase() === 'api.datamartgh.shop';
+        } catch (_) {
+            return false;
+        }
+    }) || null;
+}
+
+function createDataMartRouteToken(phoneNumber, configName) {
+    const payload = {
+        phone: normalizeGhanaLocalPhone(phoneNumber),
+        configName: String(configName || ''),
+        expiresAt: Date.now() + (5 * 60 * 1000)
+    };
+    const encodedPayload = Buffer.from(JSON.stringify(payload)).toString('base64url');
+    const signature = crypto.createHmac('sha256', JWT_SECRET).update(encodedPayload).digest('base64url');
+    return `${encodedPayload}.${signature}`;
+}
+
+function verifyDataMartRouteToken(token, phoneNumber) {
+    try {
+        const parts = String(token || '').split('.');
+        if (parts.length !== 2 || !parts[0] || !parts[1]) return null;
+
+        const expected = crypto.createHmac('sha256', JWT_SECRET).update(parts[0]).digest('base64url');
+        const actualBuffer = Buffer.from(parts[1]);
+        const expectedBuffer = Buffer.from(expected);
+        if (actualBuffer.length !== expectedBuffer.length || !crypto.timingSafeEqual(actualBuffer, expectedBuffer)) {
+            return null;
+        }
+
+        const payload = JSON.parse(Buffer.from(parts[0], 'base64url').toString('utf8'));
+        if (!payload.configName || !Number.isFinite(payload.expiresAt) || payload.expiresAt <= Date.now()) return null;
+        if (payload.phone !== normalizeGhanaLocalPhone(phoneNumber)) return null;
+        return payload;
+    } catch (_) {
+        return null;
+    }
+}
+
 // ─── Slug helper ──────────────────────────────────────────────────────────────
 // Converts a store name into a clean URL slug, e.g. "J.D Youngster Enterprise" → "jd-youngster-enterprise"
 function slugify(name = '') {
@@ -1258,7 +1320,12 @@ async function submitPaidOrderOnce(order, paymentTransaction, orderData) {
     // Keep the claim even if the provider call returns an error: an ambiguous
     // provider timeout must not cause automatic duplicate fulfilment. An admin
     // can inspect and deliberately retry after reconciliation.
-    return submitOrderToProvider(claimedOrder, orderData);
+    const persistedRouteName = paymentTransaction?.metadata?.orderApiConfig;
+    const routedOrderData = persistedRouteName
+        ? { ...orderData, orderApiConfig: persistedRouteName }
+        : orderData;
+
+    return submitOrderToProvider(claimedOrder, routedOrderData);
 }
 
 function shouldFallbackToWhatsApp(resultOrError) {
@@ -1313,7 +1380,11 @@ async function submitOrderToProvider(order, orderData) {
         });
 
         const provider = await Provider.findOne({ name: providerName });
-        let routing = provider?.orderRouting?.handler || 'auto';
+        // A verified DataMart fallback is an explicit per-order API route;
+        // do not let generic WhatsApp/capacity rules redirect this paid order.
+        let routing = orderData.orderApiConfig
+            ? 'api'
+            : (provider?.orderRouting?.handler || 'auto');
 
         // Block orders if the provider has been disabled by the admin
         if (provider?.disabled) {
@@ -3811,7 +3882,10 @@ app.get('/api/admin/check-order-status/:providerName/:reference', auth, async (r
 // Get provider balance from external API
 app.get('/api/admin/provider-balance/:providerName', auth, admin, async (req, res) => {
     try {
-        const result = await UniversalAPIHandler.getBalance(req.params.providerName);
+        const configIndex = req.query.configIndex !== undefined
+            ? req.query.configIndex
+            : null;
+        const result = await UniversalAPIHandler.getBalance(req.params.providerName, configIndex);
         res.json(result);
     } catch (err) {
         res.status(500).json({ message: err.message });
@@ -4173,6 +4247,39 @@ app.post('/api/payment/initiate', async (req, res) => {
                 return res.status(400).json({ message: priceCheck.reason, expectedAmount: priceCheck.expectedAmount || null });
             }
         }
+        let trustedOrderApiConfig = null;
+        if (req.body.orderApiConfigToken) {
+            const routeProof = verifyDataMartRouteToken(
+                req.body.orderApiConfigToken,
+                resolvedBeneficiary
+            );
+            if (!routeProof) {
+                return res.status(400).json({
+                    success: false,
+                    code: 'DATAMART_VERIFICATION_EXPIRED',
+                    message: 'The number verification has expired. Please check the number again.'
+                });
+            }
+
+            if (!/^MTN$/i.test(String(resolvedOrderProvider || '').trim())) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'DataMart verification routing is only enabled for standard MTN orders.'
+                });
+            }
+
+            const mtnProvider = await Provider.findOne({ name: new RegExp('^MTN$', 'i') });
+            const dataMartConfig = getDataMartFallbackConfig(mtnProvider, routeProof.configName);
+            if (!dataMartConfig) {
+                return res.status(400).json({
+                    success: false,
+                    code: 'DATAMART_CONFIG_CHANGED',
+                    message: 'The verified DataMart configuration is no longer enabled. Please check the number again.'
+                });
+            }
+            trustedOrderApiConfig = dataMartConfig.name;
+        }
+
         const result = await PaymentService.initiatePayment(gatewayName, {
             phoneNumber,
             amount,
@@ -4188,6 +4295,7 @@ app.post('/api/payment/initiate', async (req, res) => {
             guestSessionId: guestSessionId || null,
             beneficiary: resolvedBeneficiary,
             isUnverified: Boolean(req.body.isUnverified),
+            orderApiConfig: trustedOrderApiConfig,
             metadata: {
                 userId,
                 packageName: resolvedPackageName,
@@ -4200,6 +4308,7 @@ app.post('/api/payment/initiate', async (req, res) => {
                 orderProvider: resolvedOrderProvider,
                 beneficiary: resolvedBeneficiary,
                 isUnverified: Boolean(req.body.isUnverified),
+                orderApiConfig: trustedOrderApiConfig,
                 extra: req.body.extra || {},  // AFA registration details
             }
         });
@@ -5384,6 +5493,137 @@ app.get('/api/cron/update-order-status', async (req, res) => {
     } catch (err) {
         console.error('[Cron] Error:', err.message);
         res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// ============================================================
+// DATAMART MTN FALLBACK VERIFICATION (NON-CHARGING)
+// POST /api/orders/mtn/verify-datamart
+// Used only after Mamsco returns an unverified result. It calls /verify-number,
+// never /purchase, and returns a short-lived signed route token on success.
+// ============================================================
+app.post('/api/orders/mtn/verify-datamart', async (req, res) => {
+    let timeoutId;
+    try {
+        const phoneNumber = normalizeGhanaLocalPhone(req.body?.phoneNumber);
+        if (!/^\d{10}$/.test(phoneNumber)) {
+            return res.status(400).json({
+                success: false,
+                code: 'INVALID_PHONE_NUMBER',
+                message: 'A valid 10-digit MTN number is required.'
+            });
+        }
+
+        const mtnProvider = await Provider.findOne({ name: new RegExp('^MTN$', 'i') });
+        const config = getDataMartFallbackConfig(mtnProvider);
+        if (!config) {
+            return res.status(503).json({
+                success: false,
+                code: 'DATAMART_NOT_CONFIGURED',
+                message: 'The DataMart MTN fallback is not configured or enabled in the provider API settings.'
+            });
+        }
+
+        const baseUrl = UniversalAPIHandler.cleanBaseUrl(String(config.baseUrl || ''));
+        const apiKey = String(config.authHeaderValue || config.apiKey || '').trim();
+        const controller = new AbortController();
+        timeoutId = setTimeout(() => controller.abort(), 6000);
+
+        let response;
+        let data;
+        try {
+            response = await fetch(`${baseUrl}/verify-number`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                    'X-API-Key': apiKey
+                },
+                body: JSON.stringify({ phoneNumber }),
+                signal: controller.signal
+            });
+            data = await response.json();
+        } catch (upstreamError) {
+            const timedOut = upstreamError?.name === 'AbortError';
+            return res.status(503).json({
+                success: false,
+                code: 'VERIFY_UNAVAILABLE',
+                message: timedOut
+                    ? 'DataMart verification took too long. Please try again.'
+                    : 'DataMart verification is temporarily unavailable. Please try again.'
+            });
+        } finally {
+            clearTimeout(timeoutId);
+            timeoutId = null;
+        }
+
+        if (response.status === 429 || data?.code === 'RATE_LIMIT_EXCEEDED') {
+            return res.status(429).json({
+                success: false,
+                code: 'RATE_LIMIT_EXCEEDED',
+                retryAfter: data?.retryAfter || null,
+                message: 'DataMart verification is temporarily rate-limited. Please wait and try again.'
+            });
+        }
+
+        if (!response.ok || data?.status !== 'success' || typeof data?.data?.servable !== 'boolean') {
+            const unavailable = response.status === 503 || data?.code === 'VERIFY_UNAVAILABLE';
+            return res.status(unavailable ? 503 : 502).json({
+                success: false,
+                code: data?.code || (unavailable ? 'VERIFY_UNAVAILABLE' : 'DATAMART_VERIFICATION_FAILED'),
+                message: data?.message || 'DataMart could not verify this number. Please try again.'
+            });
+        }
+
+        const verifiedPhone = data.data.phoneNumber
+            ? normalizeGhanaLocalPhone(data.data.phoneNumber)
+            : phoneNumber;
+        if (verifiedPhone !== phoneNumber) {
+            return res.status(502).json({
+                success: false,
+                code: 'DATAMART_PHONE_MISMATCH',
+                message: 'DataMart returned a result for a different number.'
+            });
+        }
+
+        const servable = data.data.servable === true;
+        const result = {
+            success: true,
+            servable,
+            phoneNumber,
+            network: data.data.network || 'MTN',
+            recommendation: data.data.recommendation || null,
+            message: data.data.message || (servable
+                ? 'DataMart can serve this number.'
+                : 'DataMart cannot serve this number yet.'),
+            cached: data.data.cached === true
+        };
+
+        if (servable) {
+            result.orderApiConfig = config.name;
+            result.orderApiConfigToken = createDataMartRouteToken(phoneNumber, config.name);
+        }
+
+        console.log('[DataMart MTN Verify] Verification completed', {
+            phoneNumber,
+            servable,
+            recommendation: result.recommendation,
+            cached: result.cached,
+            routeConfig: servable ? config.name : null
+        });
+        return res.json(result);
+    } catch (error) {
+        if (timeoutId) clearTimeout(timeoutId);
+        const timedOut = error?.name === 'AbortError';
+        console.error('[DataMart MTN Verify] Request failed:', {
+            message: error?.message || 'Unknown error',
+            timedOut
+        });
+        return res.status(503).json({
+            success: false,
+            code: 'VERIFY_UNAVAILABLE',
+            message: 'DataMart verification is temporarily unavailable. Please try again or choose MTN EXPRESS.'
+        });
     }
 });
 
