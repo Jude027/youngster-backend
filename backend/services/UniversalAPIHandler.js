@@ -5,11 +5,27 @@
 const Provider = require('../models/Provider');
 const ProviderAPILog = require('../models/ProviderAPILog');
 
+function isDataMartConfig(config) {
+    try {
+        return new URL(String(config?.baseUrl || '')).hostname.toLowerCase() === 'api.datamartgh.shop';
+    } catch (_) {
+        return false;
+    }
+}
+
+function isFallbackOnlyConfig(config) {
+    // DataMart is used only after the per-order verification token explicitly
+    // selects it. Never let a fallback-only entry become the default route just
+    // because it was saved at index 0 or happens to be the first enabled entry.
+    return config?.forUnverifiedNumbers === true || isDataMartConfig(config);
+}
+
 function getActiveApiConfig(provider, requestedConfigName = null) {
     const configs = Array.isArray(provider.apiConfigs) ? provider.apiConfigs : [];
 
     // An explicitly selected route (validated and persisted by the backend) must
-    // use that exact enabled config. Never silently fall back to the primary API.
+    // use that exact enabled config. This is how a verified DataMart fallback is
+    // selected for one order only.
     if (requestedConfigName) {
         const requested = String(requestedConfigName).trim().toLowerCase();
         const matchingConfig = configs.find(config =>
@@ -23,21 +39,27 @@ function getActiveApiConfig(provider, requestedConfigName = null) {
         return legacyMatches ? provider.apiConfig : null;
     }
 
-    // The PRIMARY config is always index 0 (the first one in the array).
-    // This is what the admin sees as "[Primary] Default" in the dropdown.
-    // It handles VERIFIED numbers — DataHub for MTN, XpresPortal for AT Ishare etc.
-    // Secondary configs (index 1, 2...) are for special routing only and are
-    // NOT used for standard order processing.
-    const primaryConfig = configs.find((c, i) => c && c.enabled && i === 0);
-    if (primaryConfig) return primaryConfig;
+    // Normal orders must use a normal/primary API, never a config explicitly
+    // reserved for unverified numbers or the DataMart fallback hostname.
+    const firstConfig = configs[0];
+    if (firstConfig?.enabled === true && !isFallbackOnlyConfig(firstConfig)) {
+        return firstConfig;
+    }
 
-    // If index-0 is not enabled, try the first enabled config regardless of position
-    const firstEnabled = configs.find(c => c && c.enabled);
-    if (firstEnabled) return firstEnabled;
+    // Recover safely if a fallback entry was accidentally saved at index 0:
+    // use another enabled non-fallback config if one exists.
+    const firstEnabledPrimary = configs.find(config =>
+        config && config.enabled === true && !isFallbackOnlyConfig(config)
+    );
+    if (firstEnabledPrimary) return firstEnabledPrimary;
 
-    // Fall back to the legacy single apiConfig field
-    if (provider.apiConfig?.enabled) return provider.apiConfig;
+    // The legacy single-config slot can still be the working primary, but do
+    // not use it if it contains a fallback-only DataMart configuration.
+    if (provider.apiConfig?.enabled === true && !isFallbackOnlyConfig(provider.apiConfig)) {
+        return provider.apiConfig;
+    }
 
+    // Fail closed instead of routing a normal/verified number to DataMart.
     return null;
 }
 
@@ -90,10 +112,21 @@ class UniversalAPIHandler {
 
             const activeApiConfig = getActiveApiConfig(provider, orderData.orderApiConfig || null);
             if (!activeApiConfig) {
+                console.error('[UniversalAPIHandler] No eligible API config selected', {
+                    providerName,
+                    requestedConfigName: orderData.orderApiConfig || null
+                });
                 throw new Error(orderData.orderApiConfig
                     ? `Requested API configuration "${orderData.orderApiConfig}" is not enabled for provider ${providerName}`
-                    : `API not configured for provider ${providerName}`);
+                    : `No primary API configuration is enabled for provider ${providerName}; fallback-only configurations are not used for normal orders`);
             }
+
+            console.log('[UniversalAPIHandler] Selected API configuration', {
+                providerName,
+                selectedConfigName: activeApiConfig.name || '(unnamed)',
+                selectedHost: (() => { try { return new URL(String(activeApiConfig.baseUrl || '')).hostname; } catch (_) { return '(invalid URL)'; } })(),
+                requestedConfigName: orderData.orderApiConfig || null
+            });
 
             // Build API request
             const apiRequest = this.buildAPIRequest(provider, orderData, activeApiConfig);
