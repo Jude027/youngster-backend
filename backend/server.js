@@ -155,6 +155,42 @@ function verifyDataMartRouteToken(token, phoneNumber) {
     }
 }
 
+// Signed proof of the actual Mamsco result. This lets the backend enforce the
+// agreed rule (verified only when valid === true AND known === true), even if a
+// stale or buggy browser mistakenly asks for DataMart fallback on a verified line.
+function createMamscoVerificationToken(phoneNumber, valid, known) {
+    const payload = {
+        purpose: 'mamsco-mtn-precheck',
+        phone: normalizeGhanaLocalPhone(phoneNumber),
+        valid: valid === true,
+        known: known === true,
+        expiresAt: Date.now() + (5 * 60 * 1000)
+    };
+    const encodedPayload = Buffer.from(JSON.stringify(payload)).toString('base64url');
+    const signature = crypto.createHmac('sha256', JWT_SECRET).update(encodedPayload).digest('base64url');
+    return `${encodedPayload}.${signature}`;
+}
+
+function verifyMamscoVerificationToken(token, phoneNumber) {
+    try {
+        const parts = String(token || '').split('.');
+        if (parts.length !== 2 || !parts[0] || !parts[1]) return null;
+
+        const expected = crypto.createHmac('sha256', JWT_SECRET).update(parts[0]).digest('base64url');
+        const actualBuffer = Buffer.from(parts[1]);
+        const expectedBuffer = Buffer.from(expected);
+        if (actualBuffer.length !== expectedBuffer.length || !crypto.timingSafeEqual(actualBuffer, expectedBuffer)) return null;
+
+        const payload = JSON.parse(Buffer.from(parts[0], 'base64url').toString('utf8'));
+        if (payload.purpose !== 'mamsco-mtn-precheck' || !Number.isFinite(payload.expiresAt) || payload.expiresAt <= Date.now()) return null;
+        if (payload.phone !== normalizeGhanaLocalPhone(phoneNumber)) return null;
+        if (typeof payload.valid !== 'boolean' || typeof payload.known !== 'boolean') return null;
+        return payload;
+    } catch (_) {
+        return null;
+    }
+}
+
 // ─── Slug helper ──────────────────────────────────────────────────────────────
 // Converts a store name into a clean URL slug, e.g. "J.D Youngster Enterprise" → "jd-youngster-enterprise"
 function slugify(name = '') {
@@ -3706,19 +3742,6 @@ app.put('/api/admin/provider-api-config/:providerName', auth, admin, async (req,
         let provider = await Provider.findOne({ name: req.params.providerName });
         if (!provider) return res.status(404).json({ message: 'Provider not found' });
 
-        // Safety guard: DataMart is configured as the MTN fallback-only API and
-        // must be saved through the secondary config endpoint. Do not let a save
-        // from the legacy/primary form overwrite the normal MTN API with DataMart.
-        if (apiConfig && String(provider.name || '').trim().toUpperCase() === 'MTN') {
-            let apiConfigHost = '';
-            try { apiConfigHost = new URL(String(apiConfig.baseUrl || '')).hostname.toLowerCase(); } catch (_) { }
-            if (apiConfig.forUnverifiedNumbers === true || apiConfigHost === 'api.datamartgh.shop') {
-                return res.status(400).json({
-                    message: 'DataMart is the MTN fallback configuration. Save it in a secondary API configuration; the primary configuration must remain the normal MTN API.'
-                });
-            }
-        }
-
         if (apiConfig) {
             provider.apiConfig = {
                 ...provider.apiConfig,
@@ -5527,6 +5550,36 @@ app.post('/api/orders/mtn/verify-datamart', async (req, res) => {
             });
         }
 
+        // Only permit DataMart fallback when the signed Mamsco precheck proof
+        // confirms Mamsco did not verify BOTH flags. Never trust browser-supplied
+        // valid/known booleans, and never issue a DataMart route token for a line
+        // that Mamsco already verified.
+        const mamscoProof = verifyMamscoVerificationToken(
+            req.body?.mamscoVerificationToken,
+            phoneNumber
+        );
+        if (!mamscoProof) {
+            return res.status(403).json({
+                success: false,
+                code: 'MAMSCO_VERIFICATION_PROOF_REQUIRED',
+                message: 'Please check this number again before using the fallback verifier.'
+            });
+        }
+        if (mamscoProof.valid === true && mamscoProof.known === true) {
+            console.warn('[DataMart MTN Verify] DataMart fallback blocked because Mamsco verified the number', {
+                phoneSuffix: phoneNumber.slice(-4)
+            });
+            return res.json({
+                success: true,
+                servable: true,
+                mamscoVerified: true,
+                phoneNumber,
+                network: 'MTN',
+                recommendation: 'mamsco_verified',
+                message: 'Mamsco verified this number. Continue using the primary Mamsco route.'
+            });
+        }
+
         const mtnProvider = await Provider.findOne({ name: new RegExp('^MTN$', 'i') });
         const config = getDataMartFallbackConfig(mtnProvider);
         if (!config) {
@@ -5702,10 +5755,36 @@ app.post('/api/orders/mtn/precheck', async (req, res) => {
             });
         }
 
+        // Attach a short-lived, signed result proof to each usable result. The
+        // frontend passes it back only if it needs to request DataMart fallback;
+        // the backend then enforces the Mamsco-first routing decision itself.
+        if (response.ok && Array.isArray(data?.results)) {
+            data.results = data.results.map(item => {
+                const proofPhone = item?.normalized || item?.phone || item?.phoneNumber;
+                if (!proofPhone || typeof item?.valid !== 'boolean' || typeof item?.known !== 'boolean') {
+                    return item;
+                }
+                return {
+                    ...item,
+                    mamscoVerificationToken: createMamscoVerificationToken(
+                        proofPhone,
+                        item.valid,
+                        item.known
+                    )
+                };
+            });
+        }
+
         console.log(
             '[MTN Precheck] Response:',
             response.status,
-            data
+            {
+                success: data?.success,
+                resultCount: Array.isArray(data?.results) ? data.results.length : 0,
+                proofTokensAdded: Array.isArray(data?.results)
+                    ? data.results.filter(item => Boolean(item?.mamscoVerificationToken)).length
+                    : 0
+            }
         );
 
         return res
