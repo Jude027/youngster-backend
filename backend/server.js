@@ -3706,6 +3706,19 @@ app.put('/api/admin/provider-api-config/:providerName', auth, admin, async (req,
         let provider = await Provider.findOne({ name: req.params.providerName });
         if (!provider) return res.status(404).json({ message: 'Provider not found' });
 
+        // Safety guard: DataMart is configured as the MTN fallback-only API and
+        // must be saved through the secondary config endpoint. Do not let a save
+        // from the legacy/primary form overwrite the normal MTN API with DataMart.
+        if (apiConfig && String(provider.name || '').trim().toUpperCase() === 'MTN') {
+            let apiConfigHost = '';
+            try { apiConfigHost = new URL(String(apiConfig.baseUrl || '')).hostname.toLowerCase(); } catch (_) { }
+            if (apiConfig.forUnverifiedNumbers === true || apiConfigHost === 'api.datamartgh.shop') {
+                return res.status(400).json({
+                    message: 'DataMart is the MTN fallback configuration. Save it in a secondary API configuration; the primary configuration must remain the normal MTN API.'
+                });
+            }
+        }
+
         if (apiConfig) {
             provider.apiConfig = {
                 ...provider.apiConfig,
