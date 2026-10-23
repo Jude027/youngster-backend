@@ -3748,14 +3748,18 @@ app.put('/api/admin/provider-api-config/:providerName', auth, admin, async (req,
                 ...apiConfig
             };
         
-            // Keep the primary API config in sync.
-            // UniversalAPIHandler uses apiConfigs[0] for normal orders.
-            if (Array.isArray(provider.apiConfigs) && provider.apiConfigs.length > 0) {
+            // MTN's admin UI stores the primary Mamsco config in `apiConfig`
+            // and fallback/additional configs in `apiConfigs[]`. Do not copy the
+            // primary form into apiConfigs[0], because that slot may be the saved
+            // DataMart fallback and must retain its own credentials/settings.
+            // Preserve the legacy synchronization behavior for other providers.
+            const isMtnProvider = /^MTN$/i.test(String(provider.name || '').trim());
+            if (!isMtnProvider && Array.isArray(provider.apiConfigs) && provider.apiConfigs.length > 0) {
                 provider.apiConfigs[0] = {
                     ...provider.apiConfigs[0].toObject(),
                     ...apiConfig
                 };
-        
+
                 provider.markModified('apiConfigs');
             }
         }
@@ -5713,9 +5717,12 @@ app.post('/api/orders/mtn/precheck', async (req, res) => {
             });
         }
 
+        // Keep diagnostics useful without writing full beneficiary numbers to logs.
         console.log(
             '[MTN Precheck] Checking:',
-            phoneNumbers
+            phoneNumbers.map(phone => ({
+                phoneSuffix: normalizeGhanaLocalPhone(phone).slice(-4)
+            }))
         );
 
         const response = await fetch(
@@ -5775,15 +5782,29 @@ app.post('/api/orders/mtn/precheck', async (req, res) => {
             });
         }
 
+        // Show Mamsco's decision flags again, but never log the signed proof token
+        // or a full beneficiary number. Some Mamsco responses omit top-level
+        // `success`; that omission is not an error when HTTP status is 200.
+        const loggedResults = Array.isArray(data?.results)
+            ? data.results.map(item => {
+                const resultPhone = item?.normalized || item?.phone || item?.phoneNumber || '';
+                const normalizedPhone = normalizeGhanaLocalPhone(resultPhone);
+                return {
+                    phoneSuffix: normalizedPhone.slice(-4) || null,
+                    valid: typeof item?.valid === 'boolean' ? item.valid : null,
+                    known: typeof item?.known === 'boolean' ? item.known : null,
+                    proofAttached: Boolean(item?.mamscoVerificationToken)
+                };
+            })
+            : [];
+
         console.log(
             '[MTN Precheck] Response:',
             response.status,
             {
-                success: data?.success,
-                resultCount: Array.isArray(data?.results) ? data.results.length : 0,
-                proofTokensAdded: Array.isArray(data?.results)
-                    ? data.results.filter(item => Boolean(item?.mamscoVerificationToken)).length
-                    : 0
+                resultCount: loggedResults.length,
+                proofTokensAdded: loggedResults.filter(item => item.proofAttached).length,
+                results: loggedResults
             }
         );
 
