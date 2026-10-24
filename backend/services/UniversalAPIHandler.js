@@ -257,7 +257,7 @@ class UniversalAPIHandler {
                 body: JSON.stringify({
                     phoneNumber,
                     network: sanitizedConfig.networkKey || 'YELLO',
-                    capacity,
+                    capacity: String(capacity),
                     gateway: 'wallet'
                 }),
                 fullConfig: sanitizedConfig
