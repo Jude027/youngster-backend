@@ -218,6 +218,125 @@ async function checkMamscoMTN(phoneNumber) {
     }
 }
 
+// Shared DataMart verification protection. The vendor API key is global across
+// customers, so a per-browser button lock is not enough. Keep a rolling 60-second
+// call window in MongoDB (shared across Vercel instances) and cache resolved results
+// briefly per API key + config + phone. We never cache errors/timeouts/429s.
+const DATAMART_VERIFY_WINDOW_MS = 60_000;
+const DATAMART_VERIFY_MAX_CALLS = 2;
+const DATAMART_VERIFY_CACHE_TTL_MS = 60_000;
+let _dataMartCacheIndexPromise = null;
+
+function makeDataMartCacheKey(config, apiKey, phoneNumber) {
+    const identity = [
+        String(config?.name || ''),
+        String(config?.baseUrl || ''),
+        String(apiKey || ''),
+        normalizeGhanaLocalPhone(phoneNumber)
+    ].join('|');
+    return crypto.createHash('sha256').update(identity).digest('hex');
+}
+
+async function readDataMartVerificationCache(config, apiKey, phoneNumber) {
+    try {
+        const collection = mongoose.connection.collection('datamartverificationcache');
+        if (!_dataMartCacheIndexPromise) {
+            _dataMartCacheIndexPromise = collection.createIndex(
+                { expiresAt: 1 }, { expireAfterSeconds: 0 }
+            ).catch((err) => {
+                console.warn('[DataMart Cache] TTL index could not be ensured:', err.message);
+            });
+        }
+        await _dataMartCacheIndexPromise;
+        return await collection.findOne({
+            _id: makeDataMartCacheKey(config, apiKey, phoneNumber),
+            expiresAt: { $gt: new Date() }
+        });
+    } catch (err) {
+        // Cache failure should not incorrectly classify a number. Continue to the
+        // shared rate guard; never bypass the global quota guard if it fails.
+        console.warn('[DataMart Cache] Read failed:', err.message);
+        return null;
+    }
+}
+
+async function writeDataMartVerificationCache(config, apiKey, phoneNumber, result) {
+    try {
+        const collection = mongoose.connection.collection('datamartverificationcache');
+        if (!_dataMartCacheIndexPromise) {
+            _dataMartCacheIndexPromise = collection.createIndex(
+                { expiresAt: 1 }, { expireAfterSeconds: 0 }
+            ).catch((err) => {
+                console.warn('[DataMart Cache] TTL index could not be ensured:', err.message);
+            });
+        }
+        await _dataMartCacheIndexPromise;
+        await collection.updateOne(
+            { _id: makeDataMartCacheKey(config, apiKey, phoneNumber) },
+            { $set: {
+                servable: result.servable === true,
+                network: result.network || 'MTN',
+                recommendation: result.recommendation || null,
+                message: result.message || '',
+                expiresAt: new Date(Date.now() + DATAMART_VERIFY_CACHE_TTL_MS),
+                updatedAt: new Date()
+            } },
+            { upsert: true }
+        );
+    } catch (err) {
+        // A successful vendor response is still usable if writing the cache fails.
+        console.warn('[DataMart Cache] Write failed:', err.message);
+    }
+}
+
+async function reserveDataMartVerificationSlot(apiKey) {
+    const apiKeyHash = crypto.createHash('sha256').update(String(apiKey || '')).digest('hex');
+    const now = Date.now();
+    const cutoff = now - DATAMART_VERIFY_WINDOW_MS;
+    const collection = mongoose.connection.collection('datamartverificationratelimits');
+
+    // Atomic update pipeline makes this a rolling-window limiter shared by all
+    // backend instances. A raw API key is never stored in MongoDB.
+    const updateResult = await collection.findOneAndUpdate(
+        { _id: apiKeyHash },
+        [
+            { $set: {
+                recentCalls: {
+                    $filter: {
+                        input: { $ifNull: ['$recentCalls', []] },
+                        as: 'callTime',
+                        cond: { $gt: ['$$callTime', cutoff] }
+                    }
+                }
+            } },
+            { $set: { allowed: { $lt: [{ $size: '$recentCalls' }, DATAMART_VERIFY_MAX_CALLS] } } },
+            { $set: {
+                recentCalls: {
+                    $cond: [
+                        '$allowed',
+                        { $concatArrays: ['$recentCalls', [now]] },
+                        '$recentCalls'
+                    ]
+                },
+                updatedAt: new Date(now)
+            } }
+        ],
+        { upsert: true, returnDocument: 'after' }
+    );
+
+    const doc = updateResult?.value || updateResult;
+    if (doc?.allowed === true) return { allowed: true };
+
+    const calls = (Array.isArray(doc?.recentCalls) ? doc.recentCalls : [])
+        .filter((value) => Number.isFinite(Number(value)) && Number(value) > cutoff)
+        .map(Number);
+    const oldest = calls.length ? Math.min(...calls) : now;
+    return {
+        allowed: false,
+        retryAfter: Math.max(1, Math.ceil((oldest + DATAMART_VERIFY_WINDOW_MS - now) / 1000))
+    };
+}
+
 // Non-charging DataMart verification shared by the Django proxy endpoints.
 // A successful response with servable:false is a valid verification result,
 // not an upstream service error.
@@ -241,6 +360,52 @@ async function checkDataMartMTN(phoneNumber) {
 
         const baseUrl = UniversalAPIHandler.cleanBaseUrl(String(config.baseUrl || ''));
         const apiKey = String(config.authHeaderValue || config.apiKey || '').trim();
+
+        const cachedVerification = await readDataMartVerificationCache(config, apiKey, phoneNumber);
+        if (cachedVerification) {
+            return {
+                ok: true,
+                config,
+                servable: cachedVerification.servable === true,
+                network: cachedVerification.network || 'MTN',
+                recommendation: cachedVerification.recommendation || null,
+                message: cachedVerification.message || (cachedVerification.servable
+                    ? 'DataMart can serve this number.'
+                    : 'DataMart cannot serve this number yet.'),
+                cached: true
+            };
+        }
+
+        let slot;
+        try {
+            slot = await reserveDataMartVerificationSlot(apiKey);
+        } catch (rateStoreError) {
+            console.error('[DataMart Rate Guard] Could not check the shared rate window:', rateStoreError.message);
+            return {
+                ok: false,
+                status: 503,
+                config,
+                body: {
+                    success: false,
+                    code: 'VERIFY_UNAVAILABLE',
+                    message: 'The MTN verification service is temporarily busy. Please wait and try again.'
+                }
+            };
+        }
+        if (!slot.allowed) {
+            return {
+                ok: false,
+                status: 429,
+                config,
+                body: {
+                    success: false,
+                    code: 'RATE_LIMIT_EXCEEDED',
+                    retryAfter: slot.retryAfter,
+                    message: `The MTN number-check limit has been reached. Please wait ${slot.retryAfter} second(s) and try again.`
+                }
+            };
+        }
+
         const controller = new AbortController();
         timeoutId = setTimeout(() => controller.abort(), 7000);
 
@@ -332,15 +497,22 @@ async function checkDataMartMTN(phoneNumber) {
         }
 
         const servable = data.data.servable === true;
-        return {
-            ok: true,
-            config,
+        const resolvedResult = {
             servable,
             network: data.data.network || 'MTN',
             recommendation: data.data.recommendation || null,
             message: data.data.message || (servable
                 ? 'DataMart can serve this number.'
-                : 'DataMart cannot serve this number yet.'),
+                : 'DataMart cannot serve this number yet.')
+        };
+        await writeDataMartVerificationCache(config, apiKey, phoneNumber, resolvedResult);
+        return {
+            ok: true,
+            config,
+            servable,
+            network: resolvedResult.network,
+            recommendation: resolvedResult.recommendation,
+            message: resolvedResult.message,
             cached: data.data.cached === true
         };
     } catch (error) {
@@ -5981,102 +6153,39 @@ app.post('/api/orders/mtn/verify-datamart', async (req, res) => {
             });
         }
 
-        const mtnProvider = await Provider.findOne({ name: new RegExp('^MTN$', 'i') });
-        const config = getDataMartFallbackConfig(mtnProvider);
-        if (!config) {
-            return res.status(503).json({
+        const dataMart = await checkDataMartMTN(phoneNumber);
+        if (!dataMart.ok) {
+            return res.status(dataMart.status || 503).json({
+                ...(dataMart.body || {}),
                 success: false,
-                code: 'DATAMART_NOT_CONFIGURED',
-                message: 'The DataMart MTN fallback is not configured or enabled in the provider API settings.'
+                code: dataMart.body?.code || 'VERIFY_UNAVAILABLE',
+                message: dataMart.body?.message || 'DataMart verification is temporarily unavailable. Please try again.'
             });
         }
 
-        const baseUrl = UniversalAPIHandler.cleanBaseUrl(String(config.baseUrl || ''));
-        const apiKey = String(config.authHeaderValue || config.apiKey || '').trim();
-        const controller = new AbortController();
-        timeoutId = setTimeout(() => controller.abort(), 6000);
-
-        let response;
-        let data;
-        try {
-            response = await fetch(`${baseUrl}/verify-number`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Accept': 'application/json',
-                    'X-API-Key': apiKey
-                },
-                body: JSON.stringify({ phoneNumber }),
-                signal: controller.signal
-            });
-            data = await response.json();
-        } catch (upstreamError) {
-            const timedOut = upstreamError?.name === 'AbortError';
-            return res.status(503).json({
-                success: false,
-                code: 'VERIFY_UNAVAILABLE',
-                message: timedOut
-                    ? 'DataMart verification took too long. Please try again.'
-                    : 'DataMart verification is temporarily unavailable. Please try again.'
-            });
-        } finally {
-            clearTimeout(timeoutId);
-            timeoutId = null;
-        }
-
-        if (response.status === 429 || data?.code === 'RATE_LIMIT_EXCEEDED') {
-            return res.status(429).json({
-                success: false,
-                code: 'RATE_LIMIT_EXCEEDED',
-                retryAfter: data?.retryAfter || null,
-                message: 'DataMart verification is temporarily rate-limited. Please wait and try again.'
-            });
-        }
-
-        if (!response.ok || data?.status !== 'success' || typeof data?.data?.servable !== 'boolean') {
-            const unavailable = response.status === 503 || data?.code === 'VERIFY_UNAVAILABLE';
-            return res.status(unavailable ? 503 : 502).json({
-                success: false,
-                code: data?.code || (unavailable ? 'VERIFY_UNAVAILABLE' : 'DATAMART_VERIFICATION_FAILED'),
-                message: data?.message || 'DataMart could not verify this number. Please try again.'
-            });
-        }
-
-        const verifiedPhone = data.data.phoneNumber
-            ? normalizeGhanaLocalPhone(data.data.phoneNumber)
-            : phoneNumber;
-        if (verifiedPhone !== phoneNumber) {
-            return res.status(502).json({
-                success: false,
-                code: 'DATAMART_PHONE_MISMATCH',
-                message: 'DataMart returned a result for a different number.'
-            });
-        }
-
-        const servable = data.data.servable === true;
         const result = {
             success: true,
-            servable,
+            servable: dataMart.servable === true,
             phoneNumber,
-            network: data.data.network || 'MTN',
-            recommendation: data.data.recommendation || null,
-            message: data.data.message || (servable
+            network: dataMart.network || 'MTN',
+            recommendation: dataMart.recommendation || null,
+            message: dataMart.message || (dataMart.servable
                 ? 'DataMart can serve this number.'
                 : 'DataMart cannot serve this number yet.'),
-            cached: data.data.cached === true
+            cached: dataMart.cached === true
         };
 
-        if (servable) {
-            result.orderApiConfig = config.name;
-            result.orderApiConfigToken = createDataMartRouteToken(phoneNumber, config.name);
+        if (dataMart.servable) {
+            result.orderApiConfig = dataMart.config.name;
+            result.orderApiConfigToken = createDataMartRouteToken(phoneNumber, dataMart.config.name);
         }
 
         console.log('[DataMart MTN Verify] Verification completed', {
-            phoneNumber,
-            servable,
+            phoneSuffix: phoneNumber.slice(-4),
+            servable: result.servable,
             recommendation: result.recommendation,
             cached: result.cached,
-            routeConfig: servable ? config.name : null
+            routeConfig: result.servable ? result.orderApiConfig : null
         });
         return res.json(result);
     } catch (error) {
