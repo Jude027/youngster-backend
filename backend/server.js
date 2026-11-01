@@ -123,6 +123,30 @@ function getDataMartFallbackConfig(provider, requiredConfigName = null) {
     }) || null;
 }
 
+// XpresPortal is the next MTN fallback after DataMart. It is deliberately
+// selected only for a per-order verification token, never as the normal route.
+// The existing networkKey field stores the XpresPortal offerSlug for this host;
+// this avoids a Provider schema migration while preserving existing configs.
+function getXpresPortalMTNFallbackConfig(provider, requiredConfigName = null) {
+    const configs = [
+        ...(Array.isArray(provider?.apiConfigs) ? provider.apiConfigs : []),
+        provider?.apiConfig
+    ].filter(Boolean);
+
+    return configs.find(config => {
+        if (config.enabled !== true || config.forUnverifiedNumbers !== true) return false;
+        if (requiredConfigName && String(config.name || '').trim() !== requiredConfigName) return false;
+        if (!String(config.authHeaderValue || config.apiKey || '').trim()) return false;
+        if (!String(config.networkKey || '').trim()) return false; // XpresPortal offerSlug
+
+        try {
+            return new URL(String(config.baseUrl || '')).hostname.toLowerCase() === 'api.xpresportal.app';
+        } catch (_) {
+            return false;
+        }
+    }) || null;
+}
+
 // Determine whether a configuration is reserved for DataMart/fallback traffic.
 // The primary MTN configuration must never silently resolve to the fallback API.
 function isFallbackOnlyMTNConfig(config) {
@@ -467,10 +491,12 @@ async function checkDataMartMTN(phoneNumber) {
         }
 
         if (!response.ok || data?.status !== 'success' || typeof data?.data?.servable !== 'boolean') {
-            const unavailable = response.status === 503 || data?.code === 'VERIFY_UNAVAILABLE';
+            const authFailure = response.status === 401 || response.status === 403 ||
+                data?.code === 'UNAUTHORIZED' || data?.code === 'FORBIDDEN';
+            const unavailable = response.status >= 500 || response.status === 429 || data?.code === 'VERIFY_UNAVAILABLE';
             return {
                 ok: false,
-                status: unavailable ? 503 : 502,
+                status: authFailure ? (response.status === 403 || data?.code === 'FORBIDDEN' ? 403 : 401) : (unavailable ? 503 : 502),
                 config,
                 body: {
                     success: false,
@@ -535,10 +561,11 @@ async function checkDataMartMTN(phoneNumber) {
     }
 }
 
-function createDataMartRouteToken(phoneNumber, configName) {
+function createDataMartRouteToken(phoneNumber, configName, routeProvider = 'DataMart') {
     const payload = {
         phone: normalizeGhanaLocalPhone(phoneNumber),
         configName: String(configName || ''),
+        routeProvider: routeProvider === 'XpresPortal' ? 'XpresPortal' : 'DataMart',
         expiresAt: Date.now() + (5 * 60 * 1000)
     };
     const encodedPayload = Buffer.from(JSON.stringify(payload)).toString('base64url');
@@ -561,6 +588,10 @@ function verifyDataMartRouteToken(token, phoneNumber) {
         const payload = JSON.parse(Buffer.from(parts[0], 'base64url').toString('utf8'));
         if (!payload.configName || !Number.isFinite(payload.expiresAt) || payload.expiresAt <= Date.now()) return null;
         if (payload.phone !== normalizeGhanaLocalPhone(phoneNumber)) return null;
+        // Tokens created before this update have no routeProvider and remain valid
+        // as DataMart tokens. New XpresPortal tokens are explicitly distinguished.
+        payload.routeProvider = payload.routeProvider || 'DataMart';
+        if (!['DataMart', 'XpresPortal'].includes(payload.routeProvider)) return null;
         return payload;
     } catch (_) {
         return null;
@@ -4708,7 +4739,7 @@ app.post('/api/payment/initiate', async (req, res) => {
             if (!routeProof) {
                 return res.status(400).json({
                     success: false,
-                    code: 'DATAMART_VERIFICATION_EXPIRED',
+                    code: 'MTN_VERIFICATION_EXPIRED',
                     message: 'The number verification has expired. Please check the number again.'
                 });
             }
@@ -4716,20 +4747,24 @@ app.post('/api/payment/initiate', async (req, res) => {
             if (!/^MTN$/i.test(String(resolvedOrderProvider || '').trim())) {
                 return res.status(400).json({
                     success: false,
-                    message: 'DataMart verification routing is only enabled for standard MTN orders.'
+                    message: 'MTN fallback routing is only enabled for standard MTN orders.'
                 });
             }
 
             const mtnProvider = await Provider.findOne({ name: new RegExp('^MTN$', 'i') });
-            const dataMartConfig = getDataMartFallbackConfig(mtnProvider, routeProof.configName);
-            if (!dataMartConfig) {
-                return res.status(400).json({
+            const fallbackConfig = routeProof.routeProvider === 'XpresPortal'
+                ? getXpresPortalMTNFallbackConfig(mtnProvider, routeProof.configName)
+                : getDataMartFallbackConfig(mtnProvider, routeProof.configName);
+            if (!fallbackConfig) {
+                return res.status(409).json({
                     success: false,
-                    code: 'DATAMART_CONFIG_CHANGED',
-                    message: 'The verified DataMart configuration is no longer enabled. Please check the number again.'
+                    code: routeProof.routeProvider === 'XpresPortal'
+                        ? 'XPRESSPORTAL_CONFIG_CHANGED'
+                        : 'DATAMART_CONFIG_CHANGED',
+                    message: 'The verified MTN fallback configuration is no longer enabled or has changed. Please check the number again.'
                 });
             }
-            trustedOrderApiConfig = dataMartConfig.name;
+            trustedOrderApiConfig = fallbackConfig.name;
         }
 
         const result = await PaymentService.initiatePayment(gatewayName, {
@@ -6106,13 +6141,14 @@ app.get('/api/cron/update-order-status', async (req, res) => {
 });
 
 // ============================================================
-// DATAMART MTN FALLBACK VERIFICATION (NON-CHARGING)
-// POST /api/orders/mtn/verify-datamart
-// Used only after Mamsco returns an unverified result. It calls /verify-number,
-// never /purchase, and returns a short-lived signed route token on success.
+// MTN FALLBACK VERIFICATION (NON-CHARGING)
+// POST /api/orders/mtn/verify-datamart (legacy URL retained for compatibility)
+// Mamsco is checked first by the caller. This endpoint checks DataMart next,
+// then XpresPortal beneficiary-check when DataMart is negative/unavailable.
+// A successful fallback returns a short-lived phone-bound token selecting the
+// same provider configuration that must fulfil the paid order.
 // ============================================================
 app.post('/api/orders/mtn/verify-datamart', async (req, res) => {
-    let timeoutId;
     try {
         const phoneNumber = normalizeGhanaLocalPhone(req.body?.phoneNumber);
         if (!/^\d{10}$/.test(phoneNumber)) {
@@ -6123,10 +6159,8 @@ app.post('/api/orders/mtn/verify-datamart', async (req, res) => {
             });
         }
 
-        // Only permit DataMart fallback when the signed Mamsco precheck proof
-        // confirms Mamsco did not verify BOTH flags. Never trust browser-supplied
-        // valid/known booleans, and never issue a DataMart route token for a line
-        // that Mamsco already verified.
+        // Only permit fallback checks when the signed Mamsco proof confirms that
+        // Mamsco did not verify BOTH flags. Never trust browser-supplied booleans.
         const mamscoProof = verifyMamscoVerificationToken(
             req.body?.mamscoVerificationToken,
             phoneNumber
@@ -6135,70 +6169,211 @@ app.post('/api/orders/mtn/verify-datamart', async (req, res) => {
             return res.status(403).json({
                 success: false,
                 code: 'MAMSCO_VERIFICATION_PROOF_REQUIRED',
-                message: 'Please check this number again before using the fallback verifier.'
+                message: 'Please check this number again before using the fallback verifiers.'
             });
         }
         if (mamscoProof.valid === true && mamscoProof.known === true) {
-            console.warn('[DataMart MTN Verify] DataMart fallback blocked because Mamsco verified the number', {
-                phoneSuffix: phoneNumber.slice(-4)
-            });
             return res.json({
                 success: true,
                 servable: true,
                 mamscoVerified: true,
+                verifiedBy: 'Mamsco',
+                routeProvider: 'Mamsco',
                 phoneNumber,
                 network: 'MTN',
                 recommendation: 'mamsco_verified',
-                message: 'Mamsco verified this number. Continue using the primary Mamsco route.'
+                message: 'Mamsco verified this number. Continue using the primary MTN route.'
             });
         }
 
+        const mtnProvider = await Provider.findOne({ name: new RegExp('^MTN$', 'i') });
         const dataMart = await checkDataMartMTN(phoneNumber);
-        if (!dataMart.ok) {
+
+        // DataMart remains the first fallback. A DataMart positive result wins and
+        // receives a signed DataMart-bound order token.
+        if (dataMart.ok && dataMart.servable === true) {
+            const result = {
+                success: true,
+                servable: true,
+                verifiedBy: 'DataMart',
+                routeProvider: 'DataMart',
+                phoneNumber,
+                network: dataMart.network || 'MTN',
+                recommendation: dataMart.recommendation || null,
+                message: dataMart.message || 'DataMart can serve this number.',
+                cached: dataMart.cached === true,
+                orderApiConfig: dataMart.config.name,
+                orderApiConfigToken: createDataMartRouteToken(phoneNumber, dataMart.config.name, 'DataMart')
+            };
+            console.log('[MTN Fallback Verify] DataMart verified number', {
+                phoneSuffix: phoneNumber.slice(-4),
+                routeConfig: result.orderApiConfig,
+                cached: result.cached
+            });
+            return res.json(result);
+        }
+
+        // Try XpresPortal only after a definite DataMart negative result or a
+        // temporary DataMart service failure (5xx/429). Authentication/permission
+        // errors from DataMart are not silently reclassified as a number result.
+        const dataMartTemporaryFailure = !dataMart.ok &&
+            (Number(dataMart.status) >= 500 || Number(dataMart.status) === 429);
+        const dataMartDefinitiveNegative = dataMart.ok && dataMart.servable === false;
+        if (!dataMartTemporaryFailure && !dataMartDefinitiveNegative) {
             return res.status(dataMart.status || 503).json({
                 ...(dataMart.body || {}),
                 success: false,
-                code: dataMart.body?.code || 'VERIFY_UNAVAILABLE',
-                message: dataMart.body?.message || 'DataMart verification is temporarily unavailable. Please try again.'
+                code: dataMart.body?.code || 'DATAMART_VERIFY_FAILED',
+                message: dataMart.body?.message || 'DataMart verification could not be completed. Please try again.'
+            });
+        }
+
+        const xpresConfig = getXpresPortalMTNFallbackConfig(mtnProvider);
+        if (!xpresConfig) {
+            console.warn('[MTN Fallback Verify] XpresPortal fallback is not configured', {
+                phoneSuffix: phoneNumber.slice(-4),
+                dataMartResult: dataMart.ok ? 'not_servable' : (dataMart.body?.code || dataMart.status)
+            });
+            return res.status(503).json({
+                success: false,
+                code: 'XPRESSPORTAL_NOT_CONFIGURED',
+                message: 'The MTN backup verification service is temporarily unavailable. Please wait and try again.'
+            });
+        }
+
+        const xpresApiKey = String(xpresConfig.authHeaderValue || xpresConfig.apiKey || '').trim();
+        const offerSlug = String(xpresConfig.networkKey || '').trim();
+        const xpresBaseUrl = UniversalAPIHandler.cleanBaseUrl(String(xpresConfig.baseUrl || ''));
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 8000);
+
+        let xpresResponse;
+        let xpresBody;
+        try {
+            xpresResponse = await fetch(`${xpresBaseUrl}/beneficiary-check`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                    'x-api-key': xpresApiKey
+                },
+                body: JSON.stringify({
+                    phones: [phoneNumber],
+                    offerSlug
+                }),
+                signal: controller.signal
+            });
+            const responseText = await xpresResponse.text();
+            try {
+                xpresBody = JSON.parse(responseText);
+            } catch (_) {
+                console.warn('[XpresPortal MTN Verify] Non-JSON response', {
+                    status: xpresResponse.status,
+                    phoneSuffix: phoneNumber.slice(-4)
+                });
+                return res.status(503).json({
+                    success: false,
+                    code: 'XPRESSPORTAL_INVALID_RESPONSE',
+                    message: 'The backup MTN verification service is temporarily unavailable. Please try again.'
+                });
+            }
+        } catch (upstreamError) {
+            const timedOut = upstreamError?.name === 'AbortError';
+            console.error('[XpresPortal MTN Verify] Request failed', {
+                phoneSuffix: phoneNumber.slice(-4),
+                timedOut,
+                message: upstreamError?.message || 'Unknown network error'
+            });
+            return res.status(503).json({
+                success: false,
+                code: timedOut ? 'XPRESSPORTAL_TIMEOUT' : 'XPRESSPORTAL_UNAVAILABLE',
+                message: timedOut
+                    ? 'The backup MTN verification service took too long. Please wait and try again.'
+                    : 'The backup MTN verification service is temporarily unavailable. Please wait and try again.'
+            });
+        } finally {
+            clearTimeout(timeoutId);
+        }
+
+        if (!xpresResponse.ok || xpresBody?.success !== true) {
+            const upstreamCode = xpresBody?.error?.code || xpresBody?.code || 'XPRESSPORTAL_VERIFY_FAILED';
+            console.warn('[XpresPortal MTN Verify] API rejected verification request', {
+                phoneSuffix: phoneNumber.slice(-4),
+                status: xpresResponse.status,
+                code: upstreamCode
+            });
+            return res.status(503).json({
+                success: false,
+                code: upstreamCode,
+                message: 'The backup MTN verification service could not complete the check. Please wait and try again.'
+            });
+        }
+
+        const xpresResults = xpresBody?.data?.results;
+        if (!Array.isArray(xpresResults)) {
+            return res.status(503).json({
+                success: false,
+                code: 'XPRESSPORTAL_INVALID_RESPONSE',
+                message: 'The backup MTN verification service returned an incomplete response. Please try again.'
+            });
+        }
+        const xpresResult = xpresResults.find(item =>
+            normalizeGhanaLocalPhone(item?.phone) === phoneNumber
+        );
+        if (!xpresResult || typeof xpresResult.eligible !== 'boolean') {
+            return res.status(503).json({
+                success: false,
+                code: 'XPRESSPORTAL_RESULT_MISSING',
+                message: 'The backup MTN verification service did not return a usable result. Please try again.'
             });
         }
 
         const result = {
             success: true,
-            servable: dataMart.servable === true,
+            servable: xpresResult.eligible === true,
+            verifiedBy: 'XpresPortal',
+            routeProvider: 'XpresPortal',
             phoneNumber,
-            network: dataMart.network || 'MTN',
-            recommendation: dataMart.recommendation || null,
-            message: dataMart.message || (dataMart.servable
-                ? 'DataMart can serve this number.'
-                : 'DataMart cannot serve this number yet.'),
-            cached: dataMart.cached === true
+            network: 'MTN',
+            recommendation: xpresResult.code || null,
+            message: xpresResult.reason || (xpresResult.eligible
+                ? 'XpresPortal verified this number.'
+                : 'This MTN number is not eligible for data right now.'),
+            dataMart: {
+                servable: dataMart.ok ? false : null,
+                code: dataMart.body?.code || null
+            },
+            xpresPortal: {
+                eligible: xpresResult.eligible === true,
+                code: xpresResult.code || null,
+                reason: xpresResult.reason || null
+            }
         };
 
-        if (dataMart.servable) {
-            result.orderApiConfig = dataMart.config.name;
-            result.orderApiConfigToken = createDataMartRouteToken(phoneNumber, dataMart.config.name);
+        if (xpresResult.eligible === true) {
+            result.orderApiConfig = xpresConfig.name;
+            result.orderApiConfigToken = createDataMartRouteToken(
+                phoneNumber,
+                xpresConfig.name,
+                'XpresPortal'
+            );
         }
 
-        console.log('[DataMart MTN Verify] Verification completed', {
+        console.log('[MTN Fallback Verify] XpresPortal verification completed', {
             phoneSuffix: phoneNumber.slice(-4),
-            servable: result.servable,
-            recommendation: result.recommendation,
-            cached: result.cached,
-            routeConfig: result.servable ? result.orderApiConfig : null
+            eligible: result.servable,
+            routeConfig: result.servable ? result.orderApiConfig : null,
+            dataMart: dataMart.ok ? (dataMart.servable ? 'servable' : 'not_servable') : 'temporarily_unavailable'
         });
         return res.json(result);
     } catch (error) {
-        if (timeoutId) clearTimeout(timeoutId);
-        const timedOut = error?.name === 'AbortError';
-        console.error('[DataMart MTN Verify] Request failed:', {
-            message: error?.message || 'Unknown error',
-            timedOut
+        console.error('[MTN Fallback Verify] Request failed:', {
+            message: error?.message || 'Unknown error'
         });
         return res.status(503).json({
             success: false,
             code: 'VERIFY_UNAVAILABLE',
-            message: 'DataMart verification is temporarily unavailable. Please try again or choose MTN EXPRESS.'
+            message: 'MTN verification is temporarily unavailable. Please wait and try again.'
         });
     }
 });
