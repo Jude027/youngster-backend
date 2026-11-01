@@ -14,9 +14,9 @@ function isDataMartConfig(config) {
 }
 
 function isFallbackOnlyConfig(config) {
-    // DataMart is used only after the per-order verification token explicitly
-    // selects it. Never let a fallback-only entry become the default route just
-    // because it was saved at index 0 or happens to be the first enabled entry.
+    // MTN fallback providers (DataMart/XpresPortal) are used only after a
+    // per-order verification token explicitly selects them. Never let a
+    // fallback-only entry become the default route just because of its index.
     return config?.forUnverifiedNumbers === true || isDataMartConfig(config);
 }
 
@@ -260,6 +260,44 @@ class UniversalAPIHandler {
                     capacity: String(capacity),
                     gateway: 'wallet'
                 }),
+                fullConfig: sanitizedConfig
+            };
+        }
+
+        // XpresPortal v2 MTN: beneficiary verification and paid order routing
+        // use the same selected MTN config. Its existing networkKey field stores
+        // the account's offerSlug. Do not send price, beneficiary name or MB units.
+        let isXpresPortalMTN = false;
+        try {
+            isXpresPortalMTN =
+                /^MTN$/i.test(String(provider?.name || '').trim()) &&
+                new URL(baseUrl).hostname.toLowerCase() === 'api.xpresportal.app';
+        } catch (_) { }
+
+        if (isXpresPortalMTN) {
+            const apiKey = String(sanitizedConfig.authHeaderValue || config.apiKey || '').trim();
+            const offerSlug = String(config.networkKey || '').trim();
+            if (!apiKey) throw new Error('XpresPortal API key is missing from the selected MTN configuration');
+            if (!offerSlug) throw new Error('XpresPortal MTN offerSlug is missing. Set it in the Network Key Override field for this XpresPortal configuration.');
+
+            const rawData = String(orderData.packageName || orderData.bundle_size || orderData.capacity || '').trim();
+            const dataMatch = rawData.match(/^(\d+(?:\.\d+)?)\s*(?:GB|G)?$/i);
+            if (!dataMatch) throw new Error(`Invalid XpresPortal data size: ${rawData}. Use a GB size such as 1GB or 2GB.`);
+            const dataSize = `${Number(dataMatch[1])}GB`;
+
+            const msisdn = formatGhanaPhone(orderData.phoneNumber, 'national');
+            if (!/^\d{10}$/.test(msisdn)) throw new Error('A valid 10-digit MTN beneficiary is required for XpresPortal');
+
+            const xpresEndpoint = this.cleanEndpoint(config.orderEndpoint || '/orders');
+            return {
+                url: `${baseUrl}${xpresEndpoint}`,
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                    'x-api-key': apiKey
+                },
+                body: JSON.stringify({ msisdn, data: dataSize, offerSlug }),
                 fullConfig: sanitizedConfig
             };
         }
@@ -925,6 +963,32 @@ class UniversalAPIHandler {
             };
         }
 
+        let isXpresPortalMTN = false;
+        try {
+            isXpresPortalMTN =
+                /^MTN$/i.test(String(provider?.name || '').trim()) &&
+                new URL(String(config?.baseUrl || '')).hostname.toLowerCase() === 'api.xpresportal.app';
+        } catch (_) { }
+        if (isXpresPortalMTN) {
+            const body = response.body || {};
+            const order = body.data || {};
+            const orderStatus = String(order.status || body.status || '').toLowerCase();
+            const failedStatuses = ['failed', 'failure', 'rejected', 'error', 'cancelled', 'canceled'];
+            const success = response.status >= 200 && response.status < 300 &&
+                body.success === true && !failedStatuses.includes(orderStatus);
+            return {
+                success,
+                message: body.message || body.error?.message || (success
+                    ? 'XpresPortal accepted the MTN data order.'
+                    : 'XpresPortal could not accept the MTN data order.'),
+                data: order,
+                reference: order.publicId || order.reference || order.clientReference,
+                orderId: order.publicId || order.id || order.reference,
+                orderStatus: orderStatus || (success ? 'accepted' : 'failed'),
+                status: response.status
+            };
+        }
+
         const isSPFastITIShare =
             String(provider?.name || '').toLowerCase().includes('ishare') &&
             String(config?.baseUrl || '').toLowerCase().includes('spfastit');
@@ -1126,6 +1190,31 @@ class UniversalAPIHandler {
                         String(item.baseUrl || '').toLowerCase().includes('api.datamartgh.shop')
                     );
                     if (dataMartConfig) config = dataMartConfig;
+                }
+            }
+            if (provider) {
+                // XpresPortal orders are selected per payment after beneficiary
+                // verification. Use the matching order log to select the same
+                // XpresPortal account config for GET /orders/:identifier status checks.
+                const matchingXpresLog = await ProviderAPILog.findOne({
+                    providerId: provider._id,
+                    apiReference: String(reference),
+                    apiEndpoint: /api\.xpresportal\.app/i
+                }).sort({ createdAt: -1 }).lean();
+                if (matchingXpresLog) {
+                    const availableConfigs = [
+                        ...(Array.isArray(provider.apiConfigs) ? provider.apiConfigs : []),
+                        provider.apiConfig
+                    ].filter(Boolean);
+                    const xpresConfig = availableConfigs.find(item => {
+                        if (!item || item.enabled !== true) return false;
+                        try {
+                            return new URL(String(item.baseUrl || '')).hostname.toLowerCase() === 'api.xpresportal.app';
+                        } catch (_) {
+                            return false;
+                        }
+                    });
+                    if (xpresConfig) config = xpresConfig;
                 }
             }
     
@@ -1547,8 +1636,8 @@ class UniversalAPIHandler {
                     balance:
                         data.balance !== undefined
                             ? data.balance
-                            : null,
-                    currency: data.currency || 'GHS'
+                            : (data.data?.balance !== undefined ? data.data.balance : null),
+                    currency: data.currency || data.data?.currency || 'GHS'
                 };
             }
     
