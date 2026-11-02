@@ -147,14 +147,142 @@ function getXpresPortalMTNFallbackConfig(provider, requiredConfigName = null) {
     }) || null;
 }
 
+// DataHub is the fourth MTN verification/order route after Mamsco, DataMart,
+// and XpresPortal. Reuse the existing networkKey field for YELLO or MTN_XPRESS.
+function getDataHubMTNFallbackConfig(provider, requiredConfigName = null) {
+    const configs = [
+        ...(Array.isArray(provider?.apiConfigs) ? provider.apiConfigs : []),
+        provider?.apiConfig
+    ].filter(Boolean);
+
+    return configs.find(config => {
+        if (config.enabled !== true || config.forUnverifiedNumbers !== true) return false;
+        if (requiredConfigName && String(config.name || '').trim() !== requiredConfigName) return false;
+        if (!String(config.authHeaderValue || config.apiKey || '').trim()) return false;
+        const networkKey = String(config.networkKey || '').trim().toUpperCase();
+        if (!['YELLO', 'MTN_XPRESS'].includes(networkKey)) return false;
+
+        try {
+            const parsed = new URL(String(config.baseUrl || ''));
+            return parsed.hostname.toLowerCase() === 'user.datahubgh.com' &&
+                parsed.pathname.replace(/\/$/, '').toLowerCase() === '/api/external';
+        } catch (_) {
+            return false;
+        }
+    }) || null;
+}
+
+// Interpret only explicit eligibility flags when DataHub supplies them. The
+// supplied DataHub example treats an HTTP-successful verify-number response as
+// a successful verification, so that remains the documented fallback signal.
+function getDataHubMTNEligibility(body) {
+    const containers = [
+        body, body?.data, body?.result, body?.verification, body?.beneficiary,
+        body?.data?.result, body?.data?.verification, body?.data?.beneficiary
+    ].filter(value => value && typeof value === 'object');
+    const fields = [
+        'eligible', 'isEligible', 'is_eligible', 'verified', 'isVerified',
+        'is_verified', 'isBeneficiary', 'is_beneficiary', 'onBeneficiaryList',
+        'on_beneficiary_list', 'isOnBeneficiaryList', 'is_on_beneficiary_list',
+        'isOnList', 'onList', 'approved', 'isApproved', 'is_approved',
+        'beneficiaryApproved', 'beneficiary_approved', 'allowed', 'servable',
+        'canPurchase', 'can_purchase'
+    ];
+    for (const container of containers) {
+        for (const field of fields) {
+            if (typeof container[field] === 'boolean') return container[field];
+        }
+    }
+    return null;
+}
+
+async function checkDataHubMTN(phoneNumber, isPortedNumber, config) {
+    const apiKey = String(config?.authHeaderValue || config?.apiKey || '').trim();
+    const baseUrl = UniversalAPIHandler.cleanBaseUrl(String(config?.baseUrl || ''));
+    const endpoint = '/purchases/verify-number';
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 8000);
+
+    try {
+        const response = await fetch(`${baseUrl}${endpoint}`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'X-API-Key': apiKey
+            },
+            body: JSON.stringify({
+                phone: phoneNumber,
+                is_ported_number: isPortedNumber === true
+            }),
+            signal: controller.signal
+        });
+        const responseText = await response.text();
+        let body;
+        try {
+            body = JSON.parse(responseText);
+        } catch (_) {
+            return { ok: false, temporary: response.status >= 500 || response.status === 429 || response.ok, status: response.status, code: 'DATAHUB_INVALID_RESPONSE', message: 'DataHub returned an invalid verification response.' };
+        }
+
+        const eligibility = getDataHubMTNEligibility(body);
+        const message = String(body?.message || body?.error?.message || body?.error || '').trim();
+        const rejectionMessage = /not\s+(?:on|in)\s+(?:the\s+)?beneficiar|not\s+verified|not\s+eligible|unverified|not\s+approved|beneficiar.{0,50}(?:pending|approval|reject|not\s+found)|(?:submitted|pending).{0,40}approv/i.test(message);
+
+        if (response.status < 500 && response.status !== 429 && rejectionMessage) {
+            return { ok: true, servable: false, status: response.status, body, config, message };
+        }
+        if (eligibility !== null && response.ok && body?.success !== false) {
+            return { ok: true, servable: eligibility, status: response.status, body, config, message };
+        }
+        if (response.ok && body?.success !== false) {
+            // The DataHub JavaScript example defines response.ok as the
+            // successful beneficiary verification path when no result flag is
+            // documented in its response schema.
+            return { ok: true, servable: true, status: response.status, body, config, message };
+        }
+        if (response.ok && eligibility === false) {
+            return { ok: true, servable: false, status: response.status, body, config, message };
+        }
+        if ((response.status === 400 || response.status === 422) && rejectionMessage) {
+            return { ok: true, servable: false, status: response.status, body, config, message };
+        }
+
+        const temporary = response.status >= 500 || response.status === 429;
+        return {
+            ok: false,
+            temporary,
+            status: response.status,
+            body,
+            code: body?.code || body?.error?.code || (response.status === 401 || response.status === 403 ? 'DATAHUB_AUTH_ERROR' : 'DATAHUB_VERIFY_FAILED'),
+            message: message || `DataHub verification could not be completed (HTTP ${response.status}).`
+        };
+    } catch (error) {
+        return {
+            ok: false,
+            temporary: true,
+            status: 503,
+            code: error?.name === 'AbortError' ? 'DATAHUB_TIMEOUT' : 'DATAHUB_UNAVAILABLE',
+            message: error?.name === 'AbortError'
+                ? 'DataHub verification timed out. Please try again.'
+                : 'DataHub verification is temporarily unavailable. Please try again.'
+        };
+    } finally {
+        clearTimeout(timeoutId);
+    }
+}
+
 // Determine whether a configuration is reserved for DataMart/fallback traffic.
 // The primary MTN configuration must never silently resolve to the fallback API.
 function isFallbackOnlyMTNConfig(config) {
     if (!config) return true;
     if (config.forUnverifiedNumbers === true) return true;
-    if (/datamart/i.test(String(config.name || ''))) return true;
+    if (/datamart|xpresportal|datahub/i.test(String(config.name || ''))) return true;
     try {
-        return new URL(String(config.baseUrl || '')).hostname.toLowerCase() === 'api.datamartgh.shop';
+        const hostname = new URL(String(config.baseUrl || '')).hostname.toLowerCase();
+        return hostname === 'api.datamartgh.shop' ||
+            hostname === 'api.xpresportal.app' ||
+            hostname === 'user.datahubgh.com';
     } catch (_) {
         return false;
     }
@@ -565,7 +693,7 @@ function createDataMartRouteToken(phoneNumber, configName, routeProvider = 'Data
     const payload = {
         phone: normalizeGhanaLocalPhone(phoneNumber),
         configName: String(configName || ''),
-        routeProvider: routeProvider === 'XpresPortal' ? 'XpresPortal' : 'DataMart',
+        routeProvider: ['DataMart', 'XpresPortal', 'DataHub'].includes(routeProvider) ? routeProvider : 'DataMart',
         expiresAt: Date.now() + (5 * 60 * 1000)
     };
     const encodedPayload = Buffer.from(JSON.stringify(payload)).toString('base64url');
@@ -588,10 +716,10 @@ function verifyDataMartRouteToken(token, phoneNumber) {
         const payload = JSON.parse(Buffer.from(parts[0], 'base64url').toString('utf8'));
         if (!payload.configName || !Number.isFinite(payload.expiresAt) || payload.expiresAt <= Date.now()) return null;
         if (payload.phone !== normalizeGhanaLocalPhone(phoneNumber)) return null;
-        // Tokens created before this update have no routeProvider and remain valid
-        // as DataMart tokens. New XpresPortal tokens are explicitly distinguished.
+        // Tokens created before these updates have no routeProvider and remain
+        // valid as DataMart tokens. New fallback routes are explicitly distinguished.
         payload.routeProvider = payload.routeProvider || 'DataMart';
-        if (!['DataMart', 'XpresPortal'].includes(payload.routeProvider)) return null;
+        if (!['DataMart', 'XpresPortal', 'DataHub'].includes(payload.routeProvider)) return null;
         return payload;
     } catch (_) {
         return null;
@@ -4754,13 +4882,18 @@ app.post('/api/payment/initiate', async (req, res) => {
             const mtnProvider = await Provider.findOne({ name: new RegExp('^MTN$', 'i') });
             const fallbackConfig = routeProof.routeProvider === 'XpresPortal'
                 ? getXpresPortalMTNFallbackConfig(mtnProvider, routeProof.configName)
-                : getDataMartFallbackConfig(mtnProvider, routeProof.configName);
+                : routeProof.routeProvider === 'DataHub'
+                    ? getDataHubMTNFallbackConfig(mtnProvider, routeProof.configName)
+                    : getDataMartFallbackConfig(mtnProvider, routeProof.configName);
             if (!fallbackConfig) {
+                const routeCode = routeProof.routeProvider === 'XpresPortal'
+                    ? 'XPRESSPORTAL_CONFIG_CHANGED'
+                    : routeProof.routeProvider === 'DataHub'
+                        ? 'DATAHUB_CONFIG_CHANGED'
+                        : 'DATAMART_CONFIG_CHANGED';
                 return res.status(409).json({
                     success: false,
-                    code: routeProof.routeProvider === 'XpresPortal'
-                        ? 'XPRESSPORTAL_CONFIG_CHANGED'
-                        : 'DATAMART_CONFIG_CHANGED',
+                    code: routeCode,
                     message: 'The verified MTN fallback configuration is no longer enabled or has changed. Please check the number again.'
                 });
             }
@@ -6228,144 +6361,182 @@ app.post('/api/orders/mtn/verify-datamart', async (req, res) => {
             });
         }
 
+        let xpresState = { skipped: true, ok: false, servable: false };
         const xpresConfig = getXpresPortalMTNFallbackConfig(mtnProvider);
-        if (!xpresConfig) {
-            console.warn('[MTN Fallback Verify] XpresPortal fallback is not configured', {
-                phoneSuffix: phoneNumber.slice(-4),
-                dataMartResult: dataMart.ok ? 'not_servable' : (dataMart.body?.code || dataMart.status)
-            });
-            return res.status(503).json({
-                success: false,
-                code: 'XPRESSPORTAL_NOT_CONFIGURED',
-                message: 'The MTN backup verification service is temporarily unavailable. Please wait and try again.'
-            });
-        }
 
-        const xpresApiKey = String(xpresConfig.authHeaderValue || xpresConfig.apiKey || '').trim();
-        const offerSlug = String(xpresConfig.networkKey || '').trim();
-        const xpresBaseUrl = UniversalAPIHandler.cleanBaseUrl(String(xpresConfig.baseUrl || ''));
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 8000);
-
-        let xpresResponse;
-        let xpresBody;
-        try {
-            xpresResponse = await fetch(`${xpresBaseUrl}/beneficiary-check`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Accept': 'application/json',
-                    'x-api-key': xpresApiKey
-                },
-                body: JSON.stringify({
-                    phones: [phoneNumber],
-                    offerSlug
-                }),
-                signal: controller.signal
-            });
-            const responseText = await xpresResponse.text();
+        // XpresPortal is the third route. A positive result wins. A definitive
+        // negative or temporary service outage proceeds to the fourth route.
+        if (xpresConfig) {
+            const xpresApiKey = String(xpresConfig.authHeaderValue || xpresConfig.apiKey || '').trim();
+            const offerSlug = String(xpresConfig.networkKey || '').trim();
+            const xpresBaseUrl = UniversalAPIHandler.cleanBaseUrl(String(xpresConfig.baseUrl || ''));
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 8000);
+            let xpresResponse;
+            let xpresBody;
             try {
-                xpresBody = JSON.parse(responseText);
-            } catch (_) {
-                console.warn('[XpresPortal MTN Verify] Non-JSON response', {
-                    status: xpresResponse.status,
-                    phoneSuffix: phoneNumber.slice(-4)
+                xpresResponse = await fetch(`${xpresBaseUrl}/beneficiary-check`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json',
+                        'x-api-key': xpresApiKey
+                    },
+                    body: JSON.stringify({ phones: [phoneNumber], offerSlug }),
+                    signal: controller.signal
                 });
-                return res.status(503).json({
-                    success: false,
-                    code: 'XPRESSPORTAL_INVALID_RESPONSE',
-                    message: 'The backup MTN verification service is temporarily unavailable. Please try again.'
-                });
+                const responseText = await xpresResponse.text();
+                try {
+                    xpresBody = JSON.parse(responseText);
+                } catch (_) {
+                    xpresState = { skipped: false, ok: false, temporary: true, status: xpresResponse.status, code: 'XPRESSPORTAL_INVALID_RESPONSE' };
+                }
+            } catch (upstreamError) {
+                xpresState = {
+                    skipped: false,
+                    ok: false,
+                    temporary: true,
+                    status: 503,
+                    code: upstreamError?.name === 'AbortError' ? 'XPRESSPORTAL_TIMEOUT' : 'XPRESSPORTAL_UNAVAILABLE'
+                };
+            } finally {
+                clearTimeout(timeoutId);
             }
-        } catch (upstreamError) {
-            const timedOut = upstreamError?.name === 'AbortError';
-            console.error('[XpresPortal MTN Verify] Request failed', {
-                phoneSuffix: phoneNumber.slice(-4),
-                timedOut,
-                message: upstreamError?.message || 'Unknown network error'
-            });
-            return res.status(503).json({
-                success: false,
-                code: timedOut ? 'XPRESSPORTAL_TIMEOUT' : 'XPRESSPORTAL_UNAVAILABLE',
-                message: timedOut
-                    ? 'The backup MTN verification service took too long. Please wait and try again.'
-                    : 'The backup MTN verification service is temporarily unavailable. Please wait and try again.'
-            });
-        } finally {
-            clearTimeout(timeoutId);
-        }
 
-        if (!xpresResponse.ok || xpresBody?.success !== true) {
-            const upstreamCode = xpresBody?.error?.code || xpresBody?.code || 'XPRESSPORTAL_VERIFY_FAILED';
-            console.warn('[XpresPortal MTN Verify] API rejected verification request', {
-                phoneSuffix: phoneNumber.slice(-4),
-                status: xpresResponse.status,
-                code: upstreamCode
-            });
-            return res.status(503).json({
-                success: false,
-                code: upstreamCode,
-                message: 'The backup MTN verification service could not complete the check. Please wait and try again.'
-            });
-        }
-
-        const xpresResults = xpresBody?.data?.results;
-        if (!Array.isArray(xpresResults)) {
-            return res.status(503).json({
-                success: false,
-                code: 'XPRESSPORTAL_INVALID_RESPONSE',
-                message: 'The backup MTN verification service returned an incomplete response. Please try again.'
-            });
-        }
-        const xpresResult = xpresResults.find(item =>
-            normalizeGhanaLocalPhone(item?.phone) === phoneNumber
-        );
-        if (!xpresResult || typeof xpresResult.eligible !== 'boolean') {
-            return res.status(503).json({
-                success: false,
-                code: 'XPRESSPORTAL_RESULT_MISSING',
-                message: 'The backup MTN verification service did not return a usable result. Please try again.'
-            });
-        }
-
-        const result = {
-            success: true,
-            servable: xpresResult.eligible === true,
-            verifiedBy: 'XpresPortal',
-            routeProvider: 'XpresPortal',
-            phoneNumber,
-            network: 'MTN',
-            recommendation: xpresResult.code || null,
-            message: xpresResult.reason || (xpresResult.eligible
-                ? 'XpresPortal verified this number.'
-                : 'This MTN number is not eligible for data right now.'),
-            dataMart: {
-                servable: dataMart.ok ? false : null,
-                code: dataMart.body?.code || null
-            },
-            xpresPortal: {
-                eligible: xpresResult.eligible === true,
-                code: xpresResult.code || null,
-                reason: xpresResult.reason || null
+            if (xpresResponse && xpresBody) {
+                if (xpresResponse.ok && xpresBody?.success === true) {
+                    const results = xpresBody?.data?.results;
+                    const match = Array.isArray(results) ? results.find(item =>
+                        normalizeGhanaLocalPhone(item?.phone) === phoneNumber
+                    ) : null;
+                    if (!match || typeof match.eligible !== 'boolean') {
+                        xpresState = { skipped: false, ok: false, temporary: true, status: 503, code: 'XPRESSPORTAL_RESULT_MISSING' };
+                    } else {
+                        xpresState = {
+                            skipped: false,
+                            ok: true,
+                            servable: match.eligible === true,
+                            config: xpresConfig,
+                            code: match.code || null,
+                            reason: match.reason || null
+                        };
+                        if (xpresState.servable) {
+                            const result = {
+                                success: true,
+                                servable: true,
+                                verifiedBy: 'XpresPortal',
+                                routeProvider: 'XpresPortal',
+                                phoneNumber,
+                                network: 'MTN',
+                                recommendation: match.code || null,
+                                message: match.reason || 'XpresPortal verified this number.',
+                                orderApiConfig: xpresConfig.name,
+                                orderApiConfigToken: createDataMartRouteToken(phoneNumber, xpresConfig.name, 'XpresPortal')
+                            };
+                            console.log('[MTN Fallback Verify] XpresPortal verified number', {
+                                phoneSuffix: phoneNumber.slice(-4),
+                                routeConfig: result.orderApiConfig
+                            });
+                            return res.json(result);
+                        }
+                    }
+                } else if (xpresResponse.status === 401 || xpresResponse.status === 403 ||
+                    (xpresResponse.status >= 400 && xpresResponse.status < 500 && xpresResponse.status !== 429)) {
+                    // Invalid credentials/configuration must not be disguised as
+                    // an unverified number or silently masked by the next vendor.
+                    return res.status(503).json({
+                        success: false,
+                        code: xpresBody?.error?.code || xpresBody?.code || 'XPRESSPORTAL_VERIFY_FAILED',
+                        message: 'XpresPortal could not complete the MTN check. Please wait and try again.'
+                    });
+                } else {
+                    xpresState = { skipped: false, ok: false, temporary: true, status: xpresResponse.status, code: xpresBody?.error?.code || xpresBody?.code || 'XPRESSPORTAL_UNAVAILABLE' };
+                }
             }
-        };
 
-        if (xpresResult.eligible === true) {
-            result.orderApiConfig = xpresConfig.name;
-            result.orderApiConfigToken = createDataMartRouteToken(
+            console.log('[MTN Fallback Verify] Continuing after XpresPortal', {
+                phoneSuffix: phoneNumber.slice(-4),
+                result: xpresState.ok ? 'not_eligible' : 'temporarily_unavailable',
+                code: xpresState.code || null
+            });
+        }
+
+        // DataHub is the fourth route. It is reached only after XpresPortal has
+        // returned a definite negative or has a temporary 5xx/429/network failure.
+        const dataHubConfig = getDataHubMTNFallbackConfig(mtnProvider);
+        if (dataHubConfig) {
+            const dataHub = await checkDataHubMTN(
                 phoneNumber,
-                xpresConfig.name,
-                'XpresPortal'
+                req.body?.isPortedNumber === true,
+                dataHubConfig
             );
+            if (dataHub.ok && dataHub.servable === true) {
+                const result = {
+                    success: true,
+                    servable: true,
+                    verifiedBy: 'DataHub',
+                    routeProvider: 'DataHub',
+                    phoneNumber,
+                    network: 'MTN',
+                    recommendation: null,
+                    message: dataHub.message || 'DataHub verified this number.',
+                    orderApiConfig: dataHubConfig.name,
+                    orderApiConfigToken: createDataMartRouteToken(phoneNumber, dataHubConfig.name, 'DataHub'),
+                    dataHub: { verified: true }
+                };
+                console.log('[MTN Fallback Verify] DataHub verified number', {
+                    phoneSuffix: phoneNumber.slice(-4),
+                    routeConfig: dataHubConfig.name,
+                    networkKey: dataHubConfig.networkKey || 'YELLO'
+                });
+                return res.json(result);
+            }
+            if (dataHub.ok && dataHub.servable === false) {
+                console.log('[MTN Fallback Verify] DataHub rejected number', {
+                    phoneSuffix: phoneNumber.slice(-4),
+                    routeConfig: dataHubConfig.name
+                });
+                return res.json({
+                    success: true,
+                    servable: false,
+                    verifiedBy: 'DataHub',
+                    routeProvider: 'DataHub',
+                    phoneNumber,
+                    network: 'MTN',
+                    recommendation: dataHub.body?.code || null,
+                    message: dataHub.message || 'This MTN number is not verified on DataHub.',
+                    dataHub: { verified: false }
+                });
+            }
+            return res.status(503).json({
+                success: false,
+                code: dataHub.code || 'DATAHUB_VERIFY_FAILED',
+                message: 'The final MTN backup verification service could not complete the check. Please wait and try again.'
+            });
         }
 
-        console.log('[MTN Fallback Verify] XpresPortal verification completed', {
-            phoneSuffix: phoneNumber.slice(-4),
-            eligible: result.servable,
-            routeConfig: result.servable ? result.orderApiConfig : null,
-            dataMart: dataMart.ok ? (dataMart.servable ? 'servable' : 'not_servable') : 'temporarily_unavailable'
+        // If XpresPortal definitively rejected the number and DataHub is not
+        // configured, keep the established unverified-number response. A vendor
+        // outage, however, must remain a retryable service error, never a number
+        // rejection.
+        if (xpresState.ok && xpresState.servable === false) {
+            return res.json({
+                success: true,
+                servable: false,
+                verifiedBy: 'XpresPortal',
+                routeProvider: 'XpresPortal',
+                phoneNumber,
+                network: 'MTN',
+                recommendation: xpresState.code || null,
+                message: xpresState.reason || 'This MTN number is not eligible for data right now.'
+            });
+        }
+
+        return res.status(503).json({
+            success: false,
+            code: xpresState.code || 'MTN_FALLBACKS_UNAVAILABLE',
+            message: 'The MTN backup verification services are temporarily unavailable. Please wait and try again.'
         });
-        return res.json(result);
     } catch (error) {
         console.error('[MTN Fallback Verify] Request failed:', {
             message: error?.message || 'Unknown error'
