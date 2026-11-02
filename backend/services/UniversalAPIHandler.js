@@ -13,11 +13,22 @@ function isDataMartConfig(config) {
     }
 }
 
+function isDataHubMTNConfig(config) {
+    try {
+        const parsed = new URL(String(config?.baseUrl || ''));
+        return parsed.hostname.toLowerCase() === 'user.datahubgh.com' &&
+            parsed.pathname.replace(/\/$/, '').toLowerCase() === '/api/external';
+    } catch (_) {
+        return false;
+    }
+}
+
 function isFallbackOnlyConfig(config) {
     // MTN fallback providers (DataMart/XpresPortal) are used only after a
     // per-order verification token explicitly selects them. Never let a
     // fallback-only entry become the default route just because of its index.
-    return config?.forUnverifiedNumbers === true || isDataMartConfig(config);
+    return config?.forUnverifiedNumbers === true || isDataMartConfig(config) ||
+        isDataHubMTNConfig(config) || String(config?.baseUrl || '').toLowerCase().includes('api.xpresportal.app');
 }
 
 function getActiveApiConfig(provider, requestedConfigName = null) {
@@ -259,6 +270,43 @@ class UniversalAPIHandler {
                     network: sanitizedConfig.networkKey || 'YELLO',
                     capacity: String(capacity),
                     gateway: 'wallet'
+                }),
+                fullConfig: sanitizedConfig
+            };
+        }
+
+        // DataHub MTN: exact documented purchase payload for /data-purchase.
+        // The selected DataHub config is the same one that verified this number.
+        if (/^MTN$/i.test(String(provider?.name || '').trim()) && isDataHubMTNConfig(config)) {
+            const apiKey = String(sanitizedConfig.authHeaderValue || config.apiKey || '').trim();
+            const networkKey = String(config.networkKey || 'YELLO').trim().toUpperCase();
+            if (!apiKey) throw new Error('DataHub API key is missing from the selected MTN configuration');
+            if (!['YELLO', 'MTN_XPRESS'].includes(networkKey)) {
+                throw new Error('DataHub MTN Network Key must be YELLO or MTN_XPRESS.');
+            }
+
+            const rawCapacity = orderData.capacity !== undefined && orderData.capacity !== null
+                ? orderData.capacity
+                : orderData.packageName;
+            const capacityMatch = String(rawCapacity || '').trim().match(/^(\d+(?:\.\d+)?)(?:\s*GB)?$/i);
+            if (!capacityMatch || Number(capacityMatch[1]) <= 0) {
+                throw new Error(`Invalid DataHub bundle capacity: ${rawCapacity}`);
+            }
+            const recipient = formatGhanaPhone(orderData.phoneNumber, 'national');
+            if (!/^\d{10}$/.test(recipient)) throw new Error('A valid 10-digit MTN beneficiary is required for DataHub');
+
+            return {
+                url: `${baseUrl}${this.cleanEndpoint(config.orderEndpoint || '/data-purchase')}`,
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                    'X-API-Key': apiKey
+                },
+                body: JSON.stringify({
+                    networkKey,
+                    recipient,
+                    capacity: String(Number(capacityMatch[1]))
                 }),
                 fullConfig: sanitizedConfig
             };
@@ -941,6 +989,26 @@ class UniversalAPIHandler {
     static parseAPIResponse(provider, response, activeApiConfig = null) {
         const config = activeApiConfig || getActiveApiConfig(provider) || provider.apiConfig || {};
 
+        if (/^MTN$/i.test(String(provider?.name || '').trim()) && isDataHubMTNConfig(config)) {
+            const body = response.body || {};
+            const order = body.data || body.order || body;
+            const orderStatus = String(order.status || body.status || '').toLowerCase();
+            const failedStatuses = ['failed', 'failure', 'rejected', 'error', 'cancelled', 'canceled'];
+            const success = response.status >= 200 && response.status < 300 &&
+                body.success === true && !failedStatuses.includes(orderStatus);
+            return {
+                success,
+                message: body.message || order.message || (success
+                    ? 'DataHub accepted the MTN data order.'
+                    : 'DataHub could not accept the MTN data order.'),
+                data: order,
+                reference: order.reference || order.orderReference || order.orderNumber || order.id,
+                orderId: order.orderId || order.orderNumber || order.id || order.reference,
+                orderStatus: orderStatus || (success ? 'accepted' : 'failed'),
+                status: response.status
+            };
+        }
+
         const isDataMart = String(config?.baseUrl || '').toLowerCase().includes('api.datamartgh.shop');
         if (isDataMart) {
             const body = response.body || {};
@@ -1218,6 +1286,24 @@ class UniversalAPIHandler {
                 }
             }
     
+            if (provider) {
+                const matchingDataHubLog = await ProviderAPILog.findOne({
+                    providerId: provider._id,
+                    apiReference: String(reference),
+                    apiEndpoint: /user\.datahubgh\.com/i
+                }).sort({ createdAt: -1 }).lean();
+                if (matchingDataHubLog) {
+                    const availableConfigs = [
+                        ...(Array.isArray(provider.apiConfigs) ? provider.apiConfigs : []),
+                        provider.apiConfig
+                    ].filter(Boolean);
+                    const dataHubConfig = availableConfigs.find(item =>
+                        item && item.enabled === true && isDataHubMTNConfig(item)
+                    );
+                    if (dataHubConfig) config = dataHubConfig;
+                }
+            }
+
             if (!provider || !config) {
                 throw new Error('Provider or API configuration not found');
             }
@@ -1386,6 +1472,35 @@ class UniversalAPIHandler {
                 };
             }
     
+            // DataHub documents GET /order-status?reference=...; avoid frequent polling.
+            if (/^MTN$/i.test(String(provider.name || '').trim()) && isDataHubMTNConfig(config)) {
+                const baseUrl = this.cleanBaseUrl(config.baseUrl);
+                const statusPath = this.cleanEndpoint(config.statusEndpoint || '/order-status');
+                const separator = statusPath.includes('?') ? '&' : '?';
+                const url = `${baseUrl}${statusPath}${separator}reference=${encodeURIComponent(String(reference))}`;
+                const apiKey = String(config.authHeaderValue || config.apiKey || '').trim();
+                const response = await fetch(url, {
+                    method: 'GET',
+                    headers: { 'Accept': 'application/json', 'X-API-Key': apiKey }
+                });
+                const text = await response.text();
+                let body;
+                try { body = JSON.parse(text); } catch (_) {
+                    return { success: false, message: `DataHub returned a non-JSON status response (HTTP ${response.status}).` };
+                }
+                const order = body.data || body.order || body;
+                const orderStatus = String(order.status || body.status || '').toLowerCase();
+                return {
+                    success: response.ok && body.success === true,
+                    message: body.message || order.message || `DataHub order status: ${orderStatus || 'unknown'}`,
+                    data: order,
+                    reference: order.reference || order.orderNumber || reference,
+                    orderId: order.orderId || order.orderNumber || order.id || reference,
+                    orderStatus,
+                    status: response.status
+                };
+            }
+
             // Existing status handling for all other providers
             if (!config.statusEndpoint) {
                 throw new Error('Provider or status endpoint not configured');
@@ -1630,6 +1745,15 @@ class UniversalAPIHandler {
                 };
             }
     
+            if (/^MTN$/i.test(String(provider.name || '').trim()) && isDataHubMTNConfig(config)) {
+                return {
+                    success: data.success === true,
+                    balance: data.data?.balance ?? data.balance ?? null,
+                    currency: data.data?.currency || data.currency || 'GHS',
+                    message: data.message || 'DataHub balance retrieved successfully.'
+                };
+            }
+
             if (isXpresPortal) {
                 return {
                     success: data.success === true,
