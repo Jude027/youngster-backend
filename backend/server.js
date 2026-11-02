@@ -4963,6 +4963,13 @@ app.post('/api/payment/initiate', async (req, res) => {
 // failure is never converted into a number-rejection result.
 async function resolveDjangoMTNFallback(phoneNumber, isPortedNumber, mtnProvider) {
     const dataMart = await checkDataMartMTN(phoneNumber);
+    console.log('[MTN FALLBACK DIAGNOSTIC] DataMart result:', {
+        ok: dataMart.ok,
+        servable: dataMart.servable,
+        status: dataMart.status || null,
+        code: dataMart.body?.code || null,
+        cached: dataMart.cached === true
+    });
     if (dataMart.ok && dataMart.servable === true) {
         return {
             ok: true,
@@ -4990,6 +4997,10 @@ async function resolveDjangoMTNFallback(phoneNumber, isPortedNumber, mtnProvider
 
     let xpresState = { configured: false, ok: false, servable: false, temporary: false };
     const xpresConfig = getXpresPortalMTNFallbackConfig(mtnProvider);
+    console.log('[MTN FALLBACK DIAGNOSTIC] XpresPortal config:', {
+        configured: !!xpresConfig,
+        name: xpresConfig?.name || null
+    });
     if (xpresConfig) {
         xpresState.configured = true;
         const xpresApiKey = String(xpresConfig.authHeaderValue || xpresConfig.apiKey || '').trim();
@@ -5093,6 +5104,14 @@ async function resolveDjangoMTNFallback(phoneNumber, isPortedNumber, mtnProvider
     // DataHub is the fourth provider. It follows a definite XpresPortal
     // rejection or a temporary XpresPortal failure, just as in the new-site flow.
     const dataHubConfig = getDataHubMTNFallbackConfig(mtnProvider);
+    console.log('[MTN FALLBACK DIAGNOSTIC] DataHub config:', {
+        configured: !!dataHubConfig,
+        name: dataHubConfig?.name || null,
+        networkKey: dataHubConfig?.networkKey || null,
+        baseUrl: dataHubConfig?.baseUrl || null,
+        enabled: dataHubConfig?.enabled ?? null,
+        forUnverifiedNumbers: dataHubConfig?.forUnverifiedNumbers ?? null
+    });
     if (dataHubConfig) {
         const dataHub = await checkDataHubMTN(phoneNumber, isPortedNumber, dataHubConfig);
         if (dataHub.ok && dataHub.servable === true) {
