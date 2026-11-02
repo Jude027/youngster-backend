@@ -4957,20 +4957,212 @@ app.post('/api/payment/initiate', async (req, res) => {
         res.status(500).json({ message: err.message });
     }
 });
-// Verify a beneficiary for the Django site using Mamsco first, then DataMart
-// when Mamsco returns a valid response but does not verify BOTH flags.
-// The returned DataMart route token is optional for the next request: the order
-// proxy independently repeats the checks if Django does not forward that token.
+// Shared MTN fallback selection for the Django endpoints.
+// The same order is used by the new-site flow: Mamsco is checked separately,
+// followed by DataMart, XpresPortal, and finally DataHub. A provider-service
+// failure is never converted into a number-rejection result.
+async function resolveDjangoMTNFallback(phoneNumber, isPortedNumber, mtnProvider) {
+    const dataMart = await checkDataMartMTN(phoneNumber);
+    if (dataMart.ok && dataMart.servable === true) {
+        return {
+            ok: true,
+            servable: true,
+            provider: 'DataMart',
+            config: dataMart.config,
+            message: dataMart.message || 'DataMart can serve this number.',
+            recommendation: dataMart.recommendation || null,
+            details: { dataMart: { servable: true, recommendation: dataMart.recommendation || null, cached: dataMart.cached === true } }
+        };
+    }
+
+    const dataMartTemporaryFailure = !dataMart.ok &&
+        (Number(dataMart.status) >= 500 || Number(dataMart.status) === 429);
+    const dataMartDefinitiveNegative = dataMart.ok && dataMart.servable === false;
+    if (!dataMartTemporaryFailure && !dataMartDefinitiveNegative) {
+        return {
+            ok: false,
+            status: dataMart.status || 503,
+            code: dataMart.body?.code || 'DATAMART_VERIFY_FAILED',
+            message: dataMart.body?.message || 'DataMart verification could not be completed. Please try again.',
+            details: { dataMart: dataMart.body || null }
+        };
+    }
+
+    let xpresState = { configured: false, ok: false, servable: false, temporary: false };
+    const xpresConfig = getXpresPortalMTNFallbackConfig(mtnProvider);
+    if (xpresConfig) {
+        xpresState.configured = true;
+        const xpresApiKey = String(xpresConfig.authHeaderValue || xpresConfig.apiKey || '').trim();
+        const offerSlug = String(xpresConfig.networkKey || '').trim();
+        const xpresBaseUrl = UniversalAPIHandler.cleanBaseUrl(String(xpresConfig.baseUrl || ''));
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 8000);
+        let xpresResponse = null;
+        let xpresBody = null;
+        try {
+            xpresResponse = await fetch(`${xpresBaseUrl}/beneficiary-check`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                    'x-api-key': xpresApiKey
+                },
+                body: JSON.stringify({ phones: [phoneNumber], offerSlug }),
+                signal: controller.signal
+            });
+            const responseText = await xpresResponse.text();
+            try {
+                xpresBody = JSON.parse(responseText);
+            } catch (_) {
+                xpresState = {
+                    ...xpresState,
+                    temporary: true,
+                    code: 'XPRESSPORTAL_INVALID_RESPONSE'
+                };
+            }
+        } catch (error) {
+            xpresState = {
+                ...xpresState,
+                temporary: true,
+                code: error?.name === 'AbortError' ? 'XPRESSPORTAL_TIMEOUT' : 'XPRESSPORTAL_UNAVAILABLE'
+            };
+        } finally {
+            clearTimeout(timeoutId);
+        }
+
+        if (xpresResponse && !xpresBody &&
+            (xpresResponse.status === 401 || xpresResponse.status === 403 ||
+                (xpresResponse.status >= 400 && xpresResponse.status < 500 && xpresResponse.status !== 429))) {
+            return {
+                ok: false,
+                status: 503,
+                code: 'XPRESSPORTAL_VERIFY_FAILED',
+                message: 'XpresPortal could not complete the MTN check. Please wait and try again.',
+                details: { xpresPortal: { httpStatus: xpresResponse.status } }
+            };
+        }
+
+        if (xpresResponse && xpresBody) {
+            if (xpresResponse.ok && xpresBody?.success === true) {
+                const results = xpresBody?.data?.results;
+                const match = Array.isArray(results) ? results.find(item =>
+                    normalizeGhanaLocalPhone(item?.phone) === phoneNumber
+                ) : null;
+                if (!match || typeof match.eligible !== 'boolean') {
+                    xpresState = { ...xpresState, temporary: true, code: 'XPRESSPORTAL_RESULT_MISSING' };
+                } else {
+                    xpresState = {
+                        ...xpresState,
+                        ok: true,
+                        servable: match.eligible === true,
+                        config: xpresConfig,
+                        code: match.code || null,
+                        message: match.reason || null
+                    };
+                    if (xpresState.servable) {
+                        return {
+                            ok: true,
+                            servable: true,
+                            provider: 'XpresPortal',
+                            config: xpresConfig,
+                            message: match.reason || 'XpresPortal verified this number.',
+                            recommendation: match.code || null,
+                            details: { xpresPortal: { eligible: true, code: match.code || null } }
+                        };
+                    }
+                }
+            } else if (xpresResponse.status === 401 || xpresResponse.status === 403 ||
+                (xpresResponse.status >= 400 && xpresResponse.status < 500 && xpresResponse.status !== 429)) {
+                return {
+                    ok: false,
+                    status: 503,
+                    code: xpresBody?.error?.code || xpresBody?.code || 'XPRESSPORTAL_VERIFY_FAILED',
+                    message: 'XpresPortal could not complete the MTN check. Please wait and try again.',
+                    details: { xpresPortal: { httpStatus: xpresResponse.status } }
+                };
+            } else {
+                xpresState = {
+                    ...xpresState,
+                    temporary: true,
+                    code: xpresBody?.error?.code || xpresBody?.code || 'XPRESSPORTAL_UNAVAILABLE'
+                };
+            }
+        }
+    }
+
+    // DataHub is the fourth provider. It follows a definite XpresPortal
+    // rejection or a temporary XpresPortal failure, just as in the new-site flow.
+    const dataHubConfig = getDataHubMTNFallbackConfig(mtnProvider);
+    if (dataHubConfig) {
+        const dataHub = await checkDataHubMTN(phoneNumber, isPortedNumber, dataHubConfig);
+        if (dataHub.ok && dataHub.servable === true) {
+            return {
+                ok: true,
+                servable: true,
+                provider: 'DataHub',
+                config: dataHubConfig,
+                message: dataHub.message || 'DataHub verified this number.',
+                recommendation: null,
+                details: { dataHub: { verified: true, networkKey: dataHubConfig.networkKey || 'YELLO' } }
+            };
+        }
+        if (dataHub.ok && dataHub.servable === false) {
+            return {
+                ok: true,
+                servable: false,
+                provider: 'DataHub',
+                config: dataHubConfig,
+                code: dataHub.body?.code || 'DATAHUB_NOT_ELIGIBLE',
+                message: dataHub.message || 'This MTN number is not eligible on DataHub.',
+                details: { dataHub: { verified: false } }
+            };
+        }
+        return {
+            ok: false,
+            status: 503,
+            code: dataHub.code || 'DATAHUB_VERIFY_FAILED',
+            message: 'The final MTN backup verification service could not complete the check. Please wait and try again.',
+            details: { dataHub: { httpStatus: dataHub.status || 503 } }
+        };
+    }
+
+    // If XpresPortal gave a definite negative and DataHub is not configured,
+    // retain that definitive rejection. A vendor outage remains a retryable error.
+    if (xpresState.ok && xpresState.servable === false) {
+        return {
+            ok: true,
+            servable: false,
+            provider: 'XpresPortal',
+            config: xpresConfig,
+            code: xpresState.code || 'XPRESSPORTAL_NOT_ELIGIBLE',
+            message: xpresState.message || 'This MTN number is not eligible for data right now.',
+            details: { xpresPortal: { eligible: false, code: xpresState.code || null } }
+        };
+    }
+
+    return {
+        ok: false,
+        status: 503,
+        code: xpresState.code || 'MTN_FALLBACKS_UNAVAILABLE',
+        message: 'The MTN backup verification services are temporarily unavailable. Please wait and try again.',
+        details: { xpresPortal: { configured: xpresState.configured, temporary: xpresState.temporary } }
+    };
+}
+
+// Verify a beneficiary for the Django site using the same four-provider flow
+// as the new site: Mamsco -> DataMart -> XpresPortal -> DataHub.
+// Keep the existing response fields and signed orderApiConfigToken contract so
+// Django can forward the selected fallback route to the order proxy.
 app.post('/api/payment/verify-beneficiary', async (req, res) => {
     try {
         const { phone, is_ported_number, isPortedNumber } = req.body;
-        const resolvedIsPorted = (is_ported_number !== undefined) ? is_ported_number
+        const rawPorted = is_ported_number !== undefined ? is_ported_number
             : (isPortedNumber !== undefined ? isPortedNumber : true);
-        void resolvedIsPorted; // Retained for compatibility with the Django request contract.
+        const resolvedIsPorted = rawPorted === true || String(rawPorted).toLowerCase() === 'true';
 
         const phoneNumber = normalizeGhanaLocalPhone(phone);
         if (!/^\d{10}$/.test(phoneNumber)) {
-            return res.status(400).json({ success: false, code: 'INVALID_PHONE_NUMBER', message: 'A valid Ghana phone number is required.' });
+            return res.status(400).json({ success: false, verified: false, code: 'INVALID_PHONE_NUMBER', message: 'A valid Ghana phone number is required.' });
         }
 
         const mamsco = await checkMamscoMTN(phoneNumber);
@@ -5003,65 +5195,79 @@ app.post('/api/payment/verify-beneficiary', async (req, res) => {
                 ...mamsco.data,
                 success: true,
                 verified: true,
+                servable: true,
                 verifiedBy: 'Mamsco',
                 routeProvider: 'Mamsco',
                 mamsco: mamscoFlags
             });
         }
 
-        // Mamsco returned a usable response, but valid/known were not both true.
-        // Ask DataMart's non-charging verification endpoint before accepting the beneficiary.
-        const dataMart = await checkDataMartMTN(phoneNumber);
-        if (!dataMart.ok) {
-            console.warn('[VerifyBeneficiary] DataMart fallback check failed', {
-                phoneSuffix: phoneNumber.slice(-4),
-                mamsco: mamscoFlags,
-                code: dataMart.body?.code
-            });
-            return res.status(dataMart.status).json({
-                ...dataMart.body,
+        const mtnProvider = await Provider.findOne({ name: new RegExp('^MTN$', 'i') });
+        if (!mtnProvider) {
+            return res.status(503).json({
+                success: false,
                 verified: false,
+                code: 'MTN_PROVIDER_NOT_CONFIGURED',
+                message: 'MTN provider configuration is unavailable. Please try again.',
                 mamsco: mamscoFlags
             });
         }
 
-        if (!dataMart.servable) {
-            console.log('[VerifyBeneficiary] Rejected by both Mamsco and DataMart', {
+        const fallback = await resolveDjangoMTNFallback(phoneNumber, resolvedIsPorted, mtnProvider);
+        if (!fallback.ok) {
+            console.warn('[VerifyBeneficiary] MTN fallback verification failed', {
                 phoneSuffix: phoneNumber.slice(-4),
                 mamsco: mamscoFlags,
-                dataMartServable: false
+                code: fallback.code
+            });
+            return res.status(fallback.status || 503).json({
+                success: false,
+                verified: false,
+                code: fallback.code,
+                message: fallback.message,
+                mamsco: mamscoFlags,
+                ...(fallback.details || {})
+            });
+        }
+
+        if (!fallback.servable) {
+            console.log('[VerifyBeneficiary] Rejected by final available MTN fallback', {
+                phoneSuffix: phoneNumber.slice(-4),
+                verifiedBy: fallback.provider
             });
             return res.status(422).json({
                 success: false,
                 verified: false,
-                verifiedBy: 'DataMart',
-                routeProvider: null,
                 servable: false,
-                code: 'DATAMART_NOT_SERVABLE',
-                message: dataMart.message || 'This number cannot be served by DataMart.',
+                verifiedBy: fallback.provider,
+                routeProvider: fallback.provider,
+                code: fallback.code || `${String(fallback.provider || 'MTN').toUpperCase()}_NOT_SERVABLE`,
+                message: fallback.message || 'This MTN number could not be verified.',
                 mamsco: mamscoFlags,
-                dataMart: { servable: false, recommendation: dataMart.recommendation }
+                ...(fallback.details || {})
             });
         }
 
-        console.log('[VerifyBeneficiary] Accepted through DataMart fallback', {
+        const routeToken = createDataMartRouteToken(phoneNumber, fallback.config.name, fallback.provider);
+        console.log('[VerifyBeneficiary] Accepted through MTN fallback', {
             phoneSuffix: phoneNumber.slice(-4),
-            configName: dataMart.config.name,
-            recommendation: dataMart.recommendation
+            verifiedBy: fallback.provider,
+            configName: fallback.config.name
         });
         return res.json({
             success: true,
             verified: true,
-            verifiedBy: 'DataMart',
-            routeProvider: 'DataMart',
             servable: true,
-            orderApiConfig: dataMart.config.name,
-            orderApiConfigToken: createDataMartRouteToken(phoneNumber, dataMart.config.name),
-            network: dataMart.network || 'MTN',
-            recommendation: dataMart.recommendation,
-            message: dataMart.message || 'DataMart can serve this number.',
+            verifiedBy: fallback.provider,
+            routeProvider: fallback.provider,
+            phoneNumber,
+            orderApiConfig: fallback.config.name,
+            orderApiConfigToken: routeToken,
+            network: 'MTN',
+            recommendation: fallback.recommendation || null,
+            message: fallback.message,
             mamsco: mamscoFlags,
-            dataMart: { servable: true, recommendation: dataMart.recommendation, cached: dataMart.cached }
+            ...(fallback.details || {})
         });
     } catch (err) {
         console.error('[VerifyBeneficiary] Verification request failed:', {
@@ -5077,10 +5283,9 @@ app.post('/api/payment/verify-beneficiary', async (req, res) => {
 });
 
 // ── Django MTN Order Proxy ─────────────────────────────────────────────────────
-// PythonAnywhere calls this endpoint because it cannot reach the provider APIs.
-// Route verified numbers to the primary MTN config and DataMart-servable fallback
-// numbers to the explicitly selected DataMart config. This is enforced server-side
-// even if the Django caller does not forward orderApiConfigToken.
+// PythonAnywhere calls this endpoint to place standard MTN orders. It honours
+// a recent signed fallback route returned by Verify Beneficiary. If Django does
+// not forward that token, the proxy independently repeats the complete check.
 // POST /api/proxy/datahub-order
 // Body: { phone, volume, reference?, orderApiConfigToken? }
 app.post('/api/proxy/datahub-order', async (req, res) => {
@@ -5095,7 +5300,8 @@ app.post('/api/proxy/datahub-order', async (req, res) => {
             return res.status(400).json({ success: false, code: 'INVALID_PHONE_NUMBER', message: 'A valid Ghana phone number is required.' });
         }
 
-        // Convert Django's volume format (e.g. 5000) to GB (5); preserve current contract.
+        // Convert Django's volume format (e.g. 5000 MB) to GB; preserve the
+        // established Django proxy contract and provider package naming.
         const capacityGB = parseFloat(String(volume).match(/^(\d+(?:\.\d+)?)/)?.[1]) / 1000;
         if (!Number.isFinite(capacityGB) || capacityGB <= 0) {
             return res.status(400).json({ success: false, message: 'Invalid MTN volume' });
@@ -5103,40 +5309,50 @@ app.post('/api/proxy/datahub-order', async (req, res) => {
 
         const mtnProvider = await Provider.findOne({ name: new RegExp('^MTN$', 'i') });
         if (!mtnProvider) {
-            return res.status(503).json({ success: false, code: 'MTN_PROVIDER_NOT_CONFIGURED', message: 'MTN provider configuration is unavailable.' });
+            return res.status(503).json({ success: false, code: 'MTN_PROVIDER_NOT_CONFIGURED', message: 'MTN provider configuration is unavailable.', orderSubmitted: false });
         }
 
         let selectedProvider;
         let selectedConfigName;
         let routeReason;
         let mamscoFlags = null;
-        let dataMartServable = null;
 
-        // If Django forwards the signed token returned by Verify Beneficiary,
-        // honour it only when valid, phone-bound, unexpired and still configured.
-        // If no token is sent, perform the same checks here independently.
-        const suppliedDataMartToken = req.body.orderApiConfigToken || req.body.datamartRouteToken;
-        if (suppliedDataMartToken) {
-            const routeProof = verifyDataMartRouteToken(suppliedDataMartToken, phoneNumber);
+        // Fallback tokens are signed, bound to the phone, time-limited and bound
+        // to a specific provider configuration. Old DataMart tokens remain valid.
+        const suppliedRouteToken = req.body.orderApiConfigToken || req.body.datamartRouteToken;
+        if (suppliedRouteToken) {
+            const routeProof = verifyDataMartRouteToken(suppliedRouteToken, phoneNumber);
             if (!routeProof) {
                 return res.status(400).json({
                     success: false,
-                    code: 'DATAMART_VERIFICATION_EXPIRED',
-                    message: 'The DataMart verification has expired. Please check the number again.'
+                    code: 'MTN_VERIFICATION_EXPIRED',
+                    message: 'The MTN number verification has expired. Please check the number again.',
+                    orderSubmitted: false
                 });
             }
-            const tokenConfig = getDataMartFallbackConfig(mtnProvider, routeProof.configName);
-            if (!tokenConfig) {
+
+            const configByRoute = routeProof.routeProvider === 'XpresPortal'
+                ? getXpresPortalMTNFallbackConfig(mtnProvider, routeProof.configName)
+                : routeProof.routeProvider === 'DataHub'
+                    ? getDataHubMTNFallbackConfig(mtnProvider, routeProof.configName)
+                    : getDataMartFallbackConfig(mtnProvider, routeProof.configName);
+            if (!configByRoute) {
+                const configCode = routeProof.routeProvider === 'XpresPortal'
+                    ? 'XPRESSPORTAL_CONFIG_CHANGED'
+                    : routeProof.routeProvider === 'DataHub'
+                        ? 'DATAHUB_CONFIG_CHANGED'
+                        : 'DATAMART_CONFIG_CHANGED';
                 return res.status(409).json({
                     success: false,
-                    code: 'DATAMART_CONFIG_CHANGED',
-                    message: 'The verified DataMart configuration is no longer enabled. Please check the number again.'
+                    code: configCode,
+                    message: 'The verified MTN fallback configuration is no longer enabled or has changed. Please check the number again.',
+                    orderSubmitted: false
                 });
             }
-            selectedProvider = 'DataMart';
-            selectedConfigName = tokenConfig.name;
-            routeReason = 'signed DataMart verification from Verify Beneficiary';
-            dataMartServable = true;
+
+            selectedProvider = routeProof.routeProvider;
+            selectedConfigName = configByRoute.name;
+            routeReason = `signed ${routeProof.routeProvider} verification from Verify Beneficiary`;
         } else {
             const mamsco = await checkMamscoMTN(phoneNumber);
             if (!mamsco.ok) {
@@ -5174,39 +5390,46 @@ app.post('/api/proxy/datahub-order', async (req, res) => {
                 selectedConfigName = primaryConfig.name || null;
                 routeReason = 'Mamsco valid and known flags both true';
             } else {
-                const dataMart = await checkDataMartMTN(phoneNumber);
-                if (!dataMart.ok) {
-                    console.warn('[MTN Django Proxy] Stopped before purchase: DataMart check failed', {
+                const rawPorted = req.body.is_ported_number !== undefined ? req.body.is_ported_number
+                    : (req.body.isPortedNumber !== undefined ? req.body.isPortedNumber : true);
+                const isPortedNumber = rawPorted === true || String(rawPorted).toLowerCase() === 'true';
+                const fallback = await resolveDjangoMTNFallback(phoneNumber, isPortedNumber, mtnProvider);
+                if (!fallback.ok) {
+                    console.warn('[MTN Django Proxy] Stopped before purchase: MTN fallback check failed', {
                         phoneSuffix: phoneNumber.slice(-4),
                         mamsco: mamscoFlags,
-                        code: dataMart.body?.code
+                        code: fallback.code
                     });
-                    return res.status(dataMart.status).json({
-                        ...dataMart.body,
+                    return res.status(fallback.status || 503).json({
+                        success: false,
+                        code: fallback.code,
+                        message: fallback.message,
                         orderSubmitted: false,
-                        mamsco: mamscoFlags
+                        mamsco: mamscoFlags,
+                        ...(fallback.details || {})
                     });
                 }
-                dataMartServable = dataMart.servable;
-                if (!dataMart.servable) {
-                    console.log('[MTN Django Proxy] DataMart cannot serve number; no purchase submitted', {
+                if (!fallback.servable) {
+                    console.log('[MTN Django Proxy] MTN fallback chain rejected number; no purchase submitted', {
                         phoneSuffix: phoneNumber.slice(-4),
                         mamsco: mamscoFlags,
-                        dataMartServable: false
+                        verifiedBy: fallback.provider
                     });
                     return res.status(422).json({
                         success: false,
-                        code: 'DATAMART_NOT_SERVABLE',
-                        message: dataMart.message || 'DataMart cannot serve this number. No order was submitted.',
+                        code: fallback.code || `${String(fallback.provider || 'MTN').toUpperCase()}_NOT_SERVABLE`,
+                        message: fallback.message || 'This MTN number cannot be served. No order was submitted.',
                         verified: false,
+                        servable: false,
+                        verifiedBy: fallback.provider,
                         orderSubmitted: false,
                         mamsco: mamscoFlags,
-                        dataMart: { servable: false, recommendation: dataMart.recommendation }
+                        ...(fallback.details || {})
                     });
                 }
-                selectedProvider = 'DataMart';
-                selectedConfigName = dataMart.config.name;
-                routeReason = 'Mamsco did not verify both flags and DataMart returned servable:true';
+                selectedProvider = fallback.provider;
+                selectedConfigName = fallback.config.name;
+                routeReason = `Mamsco did not verify both flags; ${fallback.provider} returned servable:true`;
             }
         }
 
@@ -5217,8 +5440,6 @@ app.post('/api/proxy/datahub-order', async (req, res) => {
             network: 'MTN',
             provider: 'MTN',
             reference: req.body.reference || `DJANGO-${Date.now()}`,
-            // Explicitly pin the chosen provider configuration. In particular, do
-            // not let a DataMart fallback become the default for Mamsco-verified lines.
             ...(selectedConfigName ? { orderApiConfig: selectedConfigName } : {})
         };
 
@@ -5227,8 +5448,7 @@ app.post('/api/proxy/datahub-order', async (req, res) => {
             selectedProvider,
             selectedConfigName: selectedConfigName || '(primary default)',
             routeReason,
-            mamsco: mamscoFlags,
-            dataMartServable
+            mamsco: mamscoFlags
         });
 
         const result = await UniversalAPIHandler.processOrder('MTN', orderData);
@@ -5243,6 +5463,7 @@ app.post('/api/proxy/datahub-order', async (req, res) => {
         return res.status(result?.success ? 200 : 502).json({
             success: result?.success === true,
             selectedProvider,
+            selectedConfigName: selectedConfigName || null,
             routeReason,
             orderSubmitted: result?.success === true,
             ...result
