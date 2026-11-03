@@ -222,6 +222,19 @@ async function checkDataHubMTN(phoneNumber, isPortedNumber, config) {
         });
 
         const responseText = await response.text();
+        console.log('[DataHub Verification] HTTP diagnostic:', {
+            status: response.status,
+            ok: response.ok,
+            contentType: response.headers.get('content-type'),
+            responseLength: responseText.length,
+            responseBody: (() => {
+                try {
+                    return JSON.parse(responseText);
+                } catch {
+                    return responseText.slice(0, 1000);
+                }
+            })()
+        });
         let body;
 
         try {
