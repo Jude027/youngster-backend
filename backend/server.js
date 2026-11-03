@@ -5027,6 +5027,12 @@ async function resolveDjangoMTNFallback(phoneNumber, isPortedNumber, mtnProvider
         let xpresResponse = null;
         let xpresBody = null;
         try {
+            console.log('[XpresPortal Diagnostic] Sending verification request:', {
+                endpoint: `${xpresBaseUrl}/beneficiary-check`,
+                offerSlug,
+                apiKeyPresent: !!xpresApiKey,
+                phoneSuffix: phoneNumber.slice(-4)
+            });
             xpresResponse = await fetch(`${xpresBaseUrl}/beneficiary-check`, {
                 method: 'POST',
                 headers: {
@@ -5038,6 +5044,34 @@ async function resolveDjangoMTNFallback(phoneNumber, isPortedNumber, mtnProvider
                 signal: controller.signal
             });
             const responseText = await xpresResponse.text();
+            console.log('[XpresPortal Diagnostic] HTTP response:', {
+                status: xpresResponse.status,
+                ok: xpresResponse.ok,
+                contentType: xpresResponse.headers.get('content-type'),
+                responseLength: responseText.length
+            });
+
+            xpresBody = JSON.parse(responseText);
+
+            const xpresResults = xpresBody?.data?.results;
+
+            console.log('[XpresPortal Diagnostic] Parsed response:', {
+                topLevelKeys: Object.keys(xpresBody || {}),
+                success: xpresBody?.success,
+                dataKeys: Object.keys(xpresBody?.data || {}),
+                resultsIsArray: Array.isArray(xpresResults),
+                resultsCount: Array.isArray(xpresResults) ? xpresResults.length : 0,
+                firstResultKeys: xpresResults?.[0]
+                    ? Object.keys(xpresResults[0])
+                    : [],
+                eligibleType: typeof xpresResults?.[0]?.eligible,
+                eligible: typeof xpresResults?.[0]?.eligible === 'boolean'
+                    ? xpresResults[0].eligible
+                    : null,
+                returnedPhoneSuffix: String(xpresResults?.[0]?.phone || '').slice(-4)
+            });
+
+            
             try {
                 xpresBody = JSON.parse(responseText);
             } catch (_) {
@@ -5048,6 +5082,11 @@ async function resolveDjangoMTNFallback(phoneNumber, isPortedNumber, mtnProvider
                 };
             }
         } catch (error) {
+            console.error('[XpresPortal Diagnostic] Request error:', {
+                name: error?.name,
+                message: error?.message,
+                code: error?.code || null
+            });
             xpresState = {
                 ...xpresState,
                 temporary: true,
@@ -5117,6 +5156,14 @@ async function resolveDjangoMTNFallback(phoneNumber, isPortedNumber, mtnProvider
         }
     }
 
+    console.log('[XpresPortal Diagnostic] Final verification state:', {
+        configured: xpresState.configured,
+        ok: xpresState.ok,
+        servable: xpresState.servable,
+        temporary: xpresState.temporary,
+        code: xpresState.code || null,
+        message: xpresState.message || null
+    });
     // DataHub is the fourth provider. It follows a definite XpresPortal
     // rejection or a temporary XpresPortal failure, just as in the new-site flow.
     const dataHubConfig = getDataHubMTNFallbackConfig(mtnProvider);
