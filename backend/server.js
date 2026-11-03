@@ -5442,7 +5442,7 @@ app.post('/api/proxy/datahub-order', async (req, res) => {
                 selectedProvider = 'Mamsco';
                 selectedConfigName = primaryConfig.name || null;
                 routeReason = 'Mamsco valid and known flags both true';
-            } else {
+                } else {
                     console.warn('[MTN Django Proxy] Fallback verification token missing; order stopped.', {
                         phoneSuffix: phoneNumber.slice(-4),
                         mamsco: mamscoFlags
