@@ -688,13 +688,21 @@ async function checkDataMartMTN(phoneNumber) {
             }
         } catch (error) {
             const timedOut = error?.name === 'AbortError';
+        
+            console.error('[DataMart Verification] Connection error:', {
+                name: error?.name,
+                code: error?.code || null,
+                message: error?.message || null,
+                timedOut
+            });
+        
             return {
                 ok: false,
                 status: 503,
                 config,
                 body: {
                     success: false,
-                    code: 'VERIFY_UNAVAILABLE',
+                    code: timedOut ? 'DATAMART_TIMEOUT' : 'VERIFY_UNAVAILABLE',
                     message: timedOut
                         ? 'DataMart verification took too long. Please try again.'
                         : 'DataMart verification is temporarily unavailable. Please try again.'
