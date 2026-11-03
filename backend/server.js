@@ -201,13 +201,24 @@ async function checkDataHubMTN(phoneNumber, isPortedNumber, config) {
     const apiKey = String(config?.authHeaderValue || config?.apiKey || '').trim();
     const baseUrl = UniversalAPIHandler.cleanBaseUrl(String(config?.baseUrl || ''));
     const endpoint = '/purchases/verify-number';
+    const requestUrl = `${baseUrl}${endpoint}`;
 
     const controller = new AbortController();
     const startedAt = Date.now();
-    const timeoutId = setTimeout(() => controller.abort(), 15000);
+    const timeoutMs = 15000;
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    console.log('[DataHub Verification] Request started:', {
+        host: (() => {
+            try { return new URL(requestUrl).host; } catch (_) { return 'invalid-url'; }
+        })(),
+        path: endpoint,
+        timeoutMs,
+        networkKey: String(config?.networkKey || 'YELLO').trim().toUpperCase()
+    });
 
     try {
-        const response = await fetch(`${baseUrl}${endpoint}`, {
+        const response = await fetch(requestUrl, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -222,75 +233,54 @@ async function checkDataHubMTN(phoneNumber, isPortedNumber, config) {
         });
 
         const responseText = await response.text();
-        console.log('[DataHub Verification] HTTP diagnostic:', {
-            status: response.status,
-            ok: response.ok,
-            contentType: response.headers.get('content-type'),
-            responseLength: responseText.length,
-            responseBody: (() => {
-                try {
-                    return JSON.parse(responseText);
-                } catch {
-                    return responseText.slice(0, 1000);
-                }
-            })()
-        });
         let body;
-
         try {
             body = JSON.parse(responseText);
         } catch (_) {
+            console.error('[DataHub Verification] Invalid response:', {
+                status: response.status,
+                contentType: response.headers.get('content-type'),
+                responseLength: responseText.length,
+                durationMs: Date.now() - startedAt
+            });
             return {
                 ok: false,
-                temporary: true,
+                temporary: response.status >= 500 || response.status === 429 || response.ok,
                 status: response.status,
                 code: 'DATAHUB_INVALID_RESPONSE',
                 message: 'DataHub returned an invalid verification response.'
             };
         }
 
-        // Extract the documented success response.
-        const successData = body?.data;
+        console.log('[DataHub Verification] HTTP response:', {
+            status: response.status,
+            ok: response.ok,
+            contentType: response.headers.get('content-type'),
+            responseLength: responseText.length,
+            durationMs: Date.now() - startedAt
+        });
 
-        if (
-            response.ok &&
-            body?.success === true &&
-            successData?.verificationEnabled === true &&
-            successData?.verified === true
-        ) {
-            return {
-                ok: true,
-                servable: true,
-                status: response.status,
-                body,
-                config,
-                message: successData.message || 'DataHub verified this number.'
-            };
-        }
-
-        // Extract the documented nested rejection response.
-        
-        const rejectionEntry = body?.['Not on beneficiary list'];
-        
-        const rejectionData = rejectionEntry?.data || body?.data;
-        
-        const rejectionMessage =
-            rejectionEntry?.message ||
-            rejectionEntry?.error ||
+        const eligibility = getDataHubMTNEligibility(body);
+        const message = String(
             body?.message ||
             body?.error?.message ||
             body?.error ||
-            '';
-        
+            body?.data?.message ||
+            ''
+        ).trim();
+
+        const explicitRejectionMessage =
+            /phone number not verified|not added to our beneficiary list|not on (?:the )?beneficiary list|not eligible|unverified/i
+                .test(message);
+
+        const rejectionData = body?.['Not on beneficiary list']?.data || body?.data;
         const documentedRejection =
-            response.status === 400 &&
-            (rejectionEntry?.success === false || body?.success === false) &&
+            (response.status === 400 || response.status === 422) &&
+            body?.success === false &&
             rejectionData?.verified === false &&
             rejectionData?.verificationEnabled === true &&
-            /phone number not verified|not added|beneficiary list/i.test(
-                String(rejectionMessage)
-            );
-        
+            explicitRejectionMessage;
+
         if (documentedRejection) {
             return {
                 ok: true,
@@ -298,12 +288,13 @@ async function checkDataHubMTN(phoneNumber, isPortedNumber, config) {
                 status: response.status,
                 body,
                 config,
-                message: String(rejectionMessage),
+                message,
                 code: 'DATAHUB_NOT_ELIGIBLE'
             };
         }
 
-        // Authentication and access errors must never mean unverified.
+        // Authentication/configuration failures are never treated as an
+        // unverified number and must not be hidden by a later fallback.
         if (response.status === 401 || response.status === 403) {
             return {
                 ok: false,
@@ -311,59 +302,88 @@ async function checkDataHubMTN(phoneNumber, isPortedNumber, config) {
                 status: response.status,
                 body,
                 config,
-                code: response.status === 401
-                    ? 'DATAHUB_AUTH_ERROR'
-                    : 'DATAHUB_ACCESS_DENIED',
+                code: response.status === 401 ? 'DATAHUB_AUTH_ERROR' : 'DATAHUB_ACCESS_DENIED',
                 message: 'DataHub could not authorize the verification request. Please check its API configuration.'
             };
         }
 
-        // Rate limits and server errors are temporary.
-        if (
-            response.status === 429 ||
-            response.status >= 500 ||
-            response.status === 503
-        ) {
+        // Accept the documented positive flags when present. Also preserve the
+        // earlier working behavior: a successful HTTP response without an
+        // explicit failure is a positive verification response.
+        if (eligibility !== null && response.ok && body?.success !== false) {
             return {
-                ok: false,
-                temporary: true,
+                ok: true,
+                servable: eligibility,
                 status: response.status,
                 body,
                 config,
-                code: body?.code || 'DATAHUB_UNAVAILABLE',
-                message: body?.message || 'DataHub verification is temporarily unavailable.'
+                message: message || (eligibility
+                    ? 'DataHub verified this number.'
+                    : 'DataHub did not verify this number.')
             };
         }
 
-        // Do not interpret undocumented or ambiguous responses as rejection.
+        if (response.ok && body?.success !== false) {
+            return {
+                ok: true,
+                servable: true,
+                status: response.status,
+                body,
+                config,
+                message: message || 'DataHub verified this number.'
+            };
+        }
+
+        // A 400/422 is a definitive negative only when the provider explicitly
+        // identifies a beneficiary/verification rejection. Other 4xx responses
+        // remain errors, not proof that the number is unverified.
+        if ((response.status === 400 || response.status === 422) &&
+            body?.success === false && explicitRejectionMessage) {
+            return {
+                ok: true,
+                servable: false,
+                status: response.status,
+                body,
+                config,
+                message,
+                code: 'DATAHUB_NOT_ELIGIBLE'
+            };
+        }
+
+        const temporary = response.status >= 500 || response.status === 429;
         return {
             ok: false,
-            temporary: true,
+            temporary,
             status: response.status,
             body,
             config,
-            code: 'DATAHUB_UNEXPECTED_RESPONSE',
-            message: 'DataHub returned an unexpected verification response.'
+            code: body?.code || body?.error?.code ||
+                (temporary ? 'DATAHUB_UNAVAILABLE' : 'DATAHUB_VERIFY_FAILED'),
+            message: message || `DataHub verification could not be completed (HTTP ${response.status}).`
         };
-
     } catch (error) {
+        const timedOut = error?.name === 'AbortError';
+        console.error('[DataHub Verification] Connection error:', {
+            name: error?.name || null,
+            code: error?.code || error?.cause?.code || null,
+            message: error?.message || 'Unknown error',
+            timedOut,
+            durationMs: Date.now() - startedAt
+        });
+
         return {
             ok: false,
             temporary: true,
             status: 503,
-            code: error?.name === 'AbortError'
-                ? 'DATAHUB_TIMEOUT'
-                : 'DATAHUB_UNAVAILABLE',
-            message: error?.name === 'AbortError'
+            code: timedOut ? 'DATAHUB_TIMEOUT' : 'DATAHUB_UNAVAILABLE',
+            message: timedOut
                 ? 'DataHub verification timed out. Please try again.'
                 : 'DataHub verification is temporarily unavailable. Please try again.'
         };
-
     } finally {
         clearTimeout(timeoutId);
-
         console.log('[DataHub Verification] Request completed:', {
-            phoneSuffix: phoneNumber.slice(-4),
+            phoneSuffix: String(phoneNumber || '').slice(-4),
             durationMs: Date.now() - startedAt
         });
     }
@@ -657,7 +677,17 @@ async function checkDataMartMTN(phoneNumber) {
         }
 
         const controller = new AbortController();
-        timeoutId = setTimeout(() => controller.abort(), 7000);
+        const startedAt = Date.now();
+        const timeoutMs = 12000;
+        timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+        console.log('[DataMart Verification] Request started:', {
+            host: (() => {
+                try { return new URL(`${baseUrl}/verify-number`).host; } catch (_) { return 'invalid-url'; }
+            })(),
+            path: '/verify-number',
+            timeoutMs
+        });
 
         let response;
         let data;
@@ -693,7 +723,8 @@ async function checkDataMartMTN(phoneNumber) {
                 name: error?.name,
                 code: error?.code || null,
                 message: error?.message || null,
-                timedOut
+                timedOut,
+                durationMs: typeof startedAt === 'number' ? Date.now() - startedAt : null
             });
         
             return {
@@ -5274,6 +5305,23 @@ async function resolveDjangoMTNFallback(phoneNumber, isPortedNumber, mtnProvider
             };
         }
         if (dataHub.ok && dataHub.servable === false) {
+            // A negative from DataHub cannot be treated as the final answer if
+            // an earlier configured provider failed to complete its check.
+            if (dataMartTemporaryFailure || xpresState.temporary) {
+                return {
+                    ok: false,
+                    status: 503,
+                    code: dataMartTemporaryFailure
+                        ? (dataMart.body?.code || 'DATAMART_VERIFY_FAILED')
+                        : (xpresState.code || 'XPRESSPORTAL_VERIFY_FAILED'),
+                    message: 'One or more MTN verification services could not complete the check. Please try again.',
+                    details: {
+                        dataMart: { temporary: dataMartTemporaryFailure },
+                        xpresPortal: { temporary: xpresState.temporary },
+                        dataHub: { verified: false }
+                    }
+                };
+            }
             return {
                 ok: true,
                 servable: false,
@@ -5296,6 +5344,18 @@ async function resolveDjangoMTNFallback(phoneNumber, isPortedNumber, mtnProvider
     // If XpresPortal gave a definite negative and DataHub is not configured,
     // retain that definitive rejection. A vendor outage remains a retryable error.
     if (xpresState.ok && xpresState.servable === false) {
+        if (dataMartTemporaryFailure) {
+            return {
+                ok: false,
+                status: 503,
+                code: dataMart.body?.code || 'DATAMART_VERIFY_FAILED',
+                message: 'DataMart verification could not complete, so the final MTN eligibility check is inconclusive. Please try again.',
+                details: {
+                    dataMart: { temporary: true },
+                    xpresPortal: { eligible: false }
+                }
+            };
+        }
         return {
             ok: true,
             servable: false,
