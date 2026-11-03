@@ -5341,28 +5341,51 @@ app.post('/api/payment/verify-beneficiary', async (req, res) => {
 // not forward that token, the proxy independently repeats the complete check.
 // POST /api/proxy/datahub-order
 // Body: { phone, volume, reference?, orderApiConfigToken? }
+
 app.post('/api/proxy/datahub-order', async (req, res) => {
     try {
         const { phone, volume } = req.body;
         const phoneNumber = normalizeGhanaLocalPhone(phone);
 
         if (!phone || !volume) {
-            return res.status(400).json({ success: false, message: 'phone and volume are required' });
+            return res.status(400).json({
+                success: false,
+                message: 'phone and volume are required',
+                orderSubmitted: false
+            });
         }
+
         if (!/^\d{10}$/.test(phoneNumber)) {
-            return res.status(400).json({ success: false, code: 'INVALID_PHONE_NUMBER', message: 'A valid Ghana phone number is required.' });
+            return res.status(400).json({
+                success: false,
+                code: 'INVALID_PHONE_NUMBER',
+                message: 'A valid Ghana phone number is required.',
+                orderSubmitted: false
+            });
         }
 
-        // Convert Django's volume format (e.g. 5000 MB) to GB; preserve the
-        // established Django proxy contract and provider package naming.
-        const capacityGB = parseFloat(String(volume).match(/^(\d+(?:\.\d+)?)/)?.[1]) / 1000;
+        const capacityGB =
+            parseFloat(String(volume).match(/^(\d+(?:\.\d+)?)/)?.[1]) / 1000;
+
         if (!Number.isFinite(capacityGB) || capacityGB <= 0) {
-            return res.status(400).json({ success: false, message: 'Invalid MTN volume' });
+            return res.status(400).json({
+                success: false,
+                message: 'Invalid MTN volume',
+                orderSubmitted: false
+            });
         }
 
-        const mtnProvider = await Provider.findOne({ name: new RegExp('^MTN$', 'i') });
+        const mtnProvider = await Provider.findOne({
+            name: new RegExp('^MTN$', 'i')
+        });
+
         if (!mtnProvider) {
-            return res.status(503).json({ success: false, code: 'MTN_PROVIDER_NOT_CONFIGURED', message: 'MTN provider configuration is unavailable.', orderSubmitted: false });
+            return res.status(503).json({
+                success: false,
+                code: 'MTN_PROVIDER_NOT_CONFIGURED',
+                message: 'MTN provider configuration is unavailable.',
+                orderSubmitted: false
+            });
         }
 
         let selectedProvider;
@@ -5370,11 +5393,15 @@ app.post('/api/proxy/datahub-order', async (req, res) => {
         let routeReason;
         let mamscoFlags = null;
 
-        // Fallback tokens are signed, bound to the phone, time-limited and bound
-        // to a specific provider configuration. Old DataMart tokens remain valid.
-        const suppliedRouteToken = req.body.orderApiConfigToken || req.body.datamartRouteToken;
+        const suppliedRouteToken =
+            req.body.orderApiConfigToken || req.body.datamartRouteToken;
+
         if (suppliedRouteToken) {
-            const routeProof = verifyDataMartRouteToken(suppliedRouteToken, phoneNumber);
+            const routeProof = verifyDataMartRouteToken(
+                suppliedRouteToken,
+                phoneNumber
+            );
+
             if (!routeProof) {
                 return res.status(400).json({
                     success: false,
@@ -5384,17 +5411,32 @@ app.post('/api/proxy/datahub-order', async (req, res) => {
                 });
             }
 
-            const configByRoute = routeProof.routeProvider === 'XpresPortal'
-                ? getXpresPortalMTNFallbackConfig(mtnProvider, routeProof.configName)
-                : routeProof.routeProvider === 'DataHub'
-                    ? getDataHubMTNFallbackConfig(mtnProvider, routeProof.configName)
-                    : getDataMartFallbackConfig(mtnProvider, routeProof.configName);
-            if (!configByRoute) {
-                const configCode = routeProof.routeProvider === 'XpresPortal'
-                    ? 'XPRESSPORTAL_CONFIG_CHANGED'
+            const configByRoute =
+                routeProof.routeProvider === 'XpresPortal'
+                    ? getXpresPortalMTNFallbackConfig(
+                        mtnProvider,
+                        routeProof.configName
+                    )
                     : routeProof.routeProvider === 'DataHub'
-                        ? 'DATAHUB_CONFIG_CHANGED'
-                        : 'DATAMART_CONFIG_CHANGED';
+                        ? getDataHubMTNFallbackConfig(
+                            mtnProvider,
+                            routeProof.configName
+                        )
+                        : routeProof.routeProvider === 'DataMart'
+                            ? getDataMartFallbackConfig(
+                                mtnProvider,
+                                routeProof.configName
+                            )
+                            : null;
+
+            if (!configByRoute) {
+                const configCode =
+                    routeProof.routeProvider === 'XpresPortal'
+                        ? 'XPRESSPORTAL_CONFIG_CHANGED'
+                        : routeProof.routeProvider === 'DataHub'
+                            ? 'DATAHUB_CONFIG_CHANGED'
+                            : 'DATAMART_CONFIG_CHANGED';
+
                 return res.status(409).json({
                     success: false,
                     code: configCode,
@@ -5405,15 +5447,15 @@ app.post('/api/proxy/datahub-order', async (req, res) => {
 
             selectedProvider = routeProof.routeProvider;
             selectedConfigName = configByRoute.name;
-            routeReason = `signed ${routeProof.routeProvider} verification from Verify Beneficiary`;
+            routeReason =
+                `signed ${routeProof.routeProvider} verification from Verify Beneficiary`;
+
         } else {
+            // No fallback token: only Mamsco verification is allowed here.
             const mamsco = await checkMamscoMTN(phoneNumber);
+
             if (!mamsco.ok) {
-                console.warn('[MTN Django Proxy] Stopped before purchase: Mamsco check failed', {
-                    phoneSuffix: phoneNumber.slice(-4),
-                    code: mamsco.code
-                });
-                return res.status(mamsco.status).json({
+                return res.status(mamsco.status || 503).json({
                     success: false,
                     code: mamsco.code,
                     message: mamsco.message,
@@ -5426,59 +5468,31 @@ app.post('/api/proxy/datahub-order', async (req, res) => {
                 known: mamsco.verification.known
             };
 
-            if (mamsco.verified) {
-                const primaryConfig = getMTNPrimaryApiConfig(mtnProvider);
-                if (!primaryConfig) {
-                    console.error('[MTN Django Proxy] Mamsco verified number, but no enabled primary MTN config exists', {
-                        phoneSuffix: phoneNumber.slice(-4)
-                    });
-                    return res.status(503).json({
-                        success: false,
-                        code: 'MTN_PRIMARY_CONFIG_UNAVAILABLE',
-                        message: 'The primary MTN provider is not configured. No order was submitted.',
-                        orderSubmitted: false
-                    });
-                }
-                selectedProvider = 'Mamsco';
-                selectedConfigName = primaryConfig.name || null;
-                routeReason = 'Mamsco valid and known flags both true';
-                } else {
-                    console.warn('[MTN Django Proxy] Fallback verification token missing; order stopped.', {
-                        phoneSuffix: phoneNumber.slice(-4),
-                        mamsco: mamscoFlags
-                    });
-                
-                    return res.status(428).json({
-                        success: false,
-                        code: 'MTN_VERIFICATION_TOKEN_REQUIRED',
-                        message: 'This number was not verified by the primary MTN provider. Please verify it again before placing the order.',
-                        verified: false,
-                        orderSubmitted: false,
-                        mamsco: mamscoFlags
-                    });
-                }
-                if (!fallback.servable) {
-                    console.log('[MTN Django Proxy] MTN fallback chain rejected number; no purchase submitted', {
-                        phoneSuffix: phoneNumber.slice(-4),
-                        mamsco: mamscoFlags,
-                        verifiedBy: fallback.provider
-                    });
-                    return res.status(422).json({
-                        success: false,
-                        code: fallback.code || `${String(fallback.provider || 'MTN').toUpperCase()}_NOT_SERVABLE`,
-                        message: fallback.message || 'This MTN number cannot be served. No order was submitted.',
-                        verified: false,
-                        servable: false,
-                        verifiedBy: fallback.provider,
-                        orderSubmitted: false,
-                        mamsco: mamscoFlags,
-                        ...(fallback.details || {})
-                    });
-                }
-                selectedProvider = fallback.provider;
-                selectedConfigName = fallback.config.name;
-                routeReason = `Mamsco did not verify both flags; ${fallback.provider} returned servable:true`;
+            if (!mamsco.verified) {
+                return res.status(428).json({
+                    success: false,
+                    code: 'MTN_VERIFICATION_TOKEN_REQUIRED',
+                    message: 'This number was not verified by the primary MTN provider. Please verify it again before placing the order.',
+                    verified: false,
+                    orderSubmitted: false,
+                    mamsco: mamscoFlags
+                });
             }
+
+            const primaryConfig = getMTNPrimaryApiConfig(mtnProvider);
+
+            if (!primaryConfig) {
+                return res.status(503).json({
+                    success: false,
+                    code: 'MTN_PRIMARY_CONFIG_UNAVAILABLE',
+                    message: 'The primary MTN provider is not configured. No order was submitted.',
+                    orderSubmitted: false
+                });
+            }
+
+            selectedProvider = 'Mamsco';
+            selectedConfigName = primaryConfig.name || null;
+            routeReason = 'Mamsco valid and known flags both true';
         }
 
         const orderData = {
@@ -5488,7 +5502,9 @@ app.post('/api/proxy/datahub-order', async (req, res) => {
             network: 'MTN',
             provider: 'MTN',
             reference: req.body.reference || `DJANGO-${Date.now()}`,
-            ...(selectedConfigName ? { orderApiConfig: selectedConfigName } : {})
+            ...(selectedConfigName
+                ? { orderApiConfig: selectedConfigName }
+                : {})
         };
 
         console.log('[MTN Django Proxy] Route selected', {
@@ -5499,7 +5515,11 @@ app.post('/api/proxy/datahub-order', async (req, res) => {
             mamsco: mamscoFlags
         });
 
-        const result = await UniversalAPIHandler.processOrder('MTN', orderData);
+        const result = await UniversalAPIHandler.processOrder(
+            'MTN',
+            orderData
+        );
+
         console.log('[MTN Django Proxy] UniversalAPIHandler result:', {
             success: result?.success,
             message: result?.message,
@@ -5516,10 +5536,12 @@ app.post('/api/proxy/datahub-order', async (req, res) => {
             orderSubmitted: result?.success === true,
             ...result
         });
+
     } catch (err) {
         console.error('[MTN Django Proxy] Error:', {
             message: err?.message || 'Unknown error'
         });
+
         return res.status(500).json({
             success: false,
             code: 'MTN_ORDER_PROXY_ERROR',
@@ -5528,6 +5550,7 @@ app.post('/api/proxy/datahub-order', async (req, res) => {
         });
     }
 });
+
 
 // ── AT Ishare Order Proxy ────────────────────────────────────────────────────
 // PythonAnywhere/Django calls Vercel, which forwards the AT Ishare order
