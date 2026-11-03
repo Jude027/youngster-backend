@@ -334,6 +334,22 @@ async function checkMamscoMTN(phoneNumber) {
             };
         }
 
+        console.log('[Mamsco Diagnostic] Response structure:', {
+            httpStatus: response.status,
+            topLevelKeys: Object.keys(data || {}),
+            resultsIsArray: Array.isArray(data?.results),
+            resultsCount: Array.isArray(data?.results) ? data.results.length : 0,
+            firstResultKeys: data?.results?.[0]
+                ? Object.keys(data.results[0])
+                : [],
+            validType: typeof data?.results?.[0]?.valid,
+            knownType: typeof data?.results?.[0]?.known,
+            createdOrdersCount: Array.isArray(data?.createdOrders)
+                ? data.createdOrders.length : null,
+            rejectedOrdersCount: Array.isArray(data?.rejectedOrders)
+                ? data.rejectedOrders.length : null
+        });
+
         const verification = Array.isArray(data?.results) ? data.results[0] : null;
         if (!verification || typeof verification.valid !== 'boolean' || typeof verification.known !== 'boolean') {
             return {
