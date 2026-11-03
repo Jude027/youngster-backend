@@ -269,27 +269,36 @@ async function checkDataHubMTN(phoneNumber, isPortedNumber, config) {
         }
 
         // Extract the documented nested rejection response.
+        
         const rejectionEntry = body?.['Not on beneficiary list'];
-        const rejectionData = rejectionEntry?.data;
-        const rejectionMessage = rejectionEntry?.message ||
+        
+        const rejectionData = rejectionEntry?.data || body?.data;
+        
+        const rejectionMessage =
+            rejectionEntry?.message ||
             rejectionEntry?.error ||
             body?.message ||
             body?.error?.message ||
-            body?.error;
-
-        if (
+            body?.error ||
+            '';
+        
+        const documentedRejection =
             response.status === 400 &&
-            rejectionEntry?.success === false &&
+            (rejectionEntry?.success === false || body?.success === false) &&
             rejectionData?.verified === false &&
-            rejectionData?.verificationEnabled === true
-        ) {
+            rejectionData?.verificationEnabled === true &&
+            /phone number not verified|not added|beneficiary list/i.test(
+                String(rejectionMessage)
+            );
+        
+        if (documentedRejection) {
             return {
                 ok: true,
                 servable: false,
                 status: response.status,
                 body,
                 config,
-                message: rejectionMessage || 'This number is not on DataHub’s beneficiary list.',
+                message: String(rejectionMessage),
                 code: 'DATAHUB_NOT_ELIGIBLE'
             };
         }
