@@ -334,22 +334,6 @@ async function checkMamscoMTN(phoneNumber) {
             };
         }
 
-        console.log('[Mamsco Diagnostic] Response structure:', {
-            httpStatus: response.status,
-            topLevelKeys: Object.keys(data || {}),
-            resultsIsArray: Array.isArray(data?.results),
-            resultsCount: Array.isArray(data?.results) ? data.results.length : 0,
-            firstResultKeys: data?.results?.[0]
-                ? Object.keys(data.results[0])
-                : [],
-            validType: typeof data?.results?.[0]?.valid,
-            knownType: typeof data?.results?.[0]?.known,
-            createdOrdersCount: Array.isArray(data?.createdOrders)
-                ? data.createdOrders.length : null,
-            rejectedOrdersCount: Array.isArray(data?.rejectedOrders)
-                ? data.rejectedOrders.length : null
-        });
-
         const verification = Array.isArray(data?.results) ? data.results[0] : null;
         if (!verification || typeof verification.valid !== 'boolean' || typeof verification.known !== 'boolean') {
             return {
@@ -4979,13 +4963,6 @@ app.post('/api/payment/initiate', async (req, res) => {
 // failure is never converted into a number-rejection result.
 async function resolveDjangoMTNFallback(phoneNumber, isPortedNumber, mtnProvider) {
     const dataMart = await checkDataMartMTN(phoneNumber);
-    console.log('[MTN FALLBACK DIAGNOSTIC] DataMart result:', {
-        ok: dataMart.ok,
-        servable: dataMart.servable,
-        status: dataMart.status || null,
-        code: dataMart.body?.code || null,
-        cached: dataMart.cached === true
-    });
     if (dataMart.ok && dataMart.servable === true) {
         return {
             ok: true,
@@ -5027,12 +5004,6 @@ async function resolveDjangoMTNFallback(phoneNumber, isPortedNumber, mtnProvider
         let xpresResponse = null;
         let xpresBody = null;
         try {
-            console.log('[XpresPortal Diagnostic] Sending verification request:', {
-                endpoint: `${xpresBaseUrl}/beneficiary-check`,
-                offerSlug,
-                apiKeyPresent: !!xpresApiKey,
-                phoneSuffix: phoneNumber.slice(-4)
-            });
             xpresResponse = await fetch(`${xpresBaseUrl}/beneficiary-check`, {
                 method: 'POST',
                 headers: {
@@ -5472,23 +5443,18 @@ app.post('/api/proxy/datahub-order', async (req, res) => {
                 selectedConfigName = primaryConfig.name || null;
                 routeReason = 'Mamsco valid and known flags both true';
             } else {
-                const rawPorted = req.body.is_ported_number !== undefined ? req.body.is_ported_number
-                    : (req.body.isPortedNumber !== undefined ? req.body.isPortedNumber : true);
-                const isPortedNumber = rawPorted === true || String(rawPorted).toLowerCase() === 'true';
-                const fallback = await resolveDjangoMTNFallback(phoneNumber, isPortedNumber, mtnProvider);
-                if (!fallback.ok) {
-                    console.warn('[MTN Django Proxy] Stopped before purchase: MTN fallback check failed', {
+                    console.warn('[MTN Django Proxy] Fallback verification token missing; order stopped.', {
                         phoneSuffix: phoneNumber.slice(-4),
-                        mamsco: mamscoFlags,
-                        code: fallback.code
+                        mamsco: mamscoFlags
                     });
-                    return res.status(fallback.status || 503).json({
+                
+                    return res.status(428).json({
                         success: false,
-                        code: fallback.code,
-                        message: fallback.message,
+                        code: 'MTN_VERIFICATION_TOKEN_REQUIRED',
+                        message: 'This number was not verified by the primary MTN provider. Please verify it again before placing the order.',
+                        verified: false,
                         orderSubmitted: false,
-                        mamsco: mamscoFlags,
-                        ...(fallback.details || {})
+                        mamsco: mamscoFlags
                     });
                 }
                 if (!fallback.servable) {
