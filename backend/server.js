@@ -223,6 +223,9 @@ async function checkDataHubMTN(phoneNumber, isPortedNumber, config) {
             headers: {
                 'Content-Type': 'application/json',
                 'Accept': 'application/json',
+                'Origin': process.env.BACKEND_ORIGIN || 'https://youngster-backend.vercel.app',
+                'Referer': process.env.BACKEND_ORIGIN || 'https://youngster-backend.vercel.app',
+                'User-Agent': 'Mozilla/5.0 (compatible; YoungsterBackend/1.0)',
                 'X-API-Key': apiKey
             },
             body: JSON.stringify({
@@ -697,6 +700,9 @@ async function checkDataMartMTN(phoneNumber) {
                 headers: {
                     'Content-Type': 'application/json',
                     'Accept': 'application/json',
+                    'Origin': process.env.BACKEND_ORIGIN || 'https://youngster-backend.vercel.app',
+                    'Referer': process.env.BACKEND_ORIGIN || 'https://youngster-backend.vercel.app',
+                    'User-Agent': 'Mozilla/5.0 (compatible; YoungsterBackend/1.0)',
                     'X-API-Key': apiKey
                 },
                 body: JSON.stringify({ phoneNumber }),
@@ -717,7 +723,8 @@ async function checkDataMartMTN(phoneNumber) {
                 };
             }
         } catch (error) {
-            const timedOut = error?.name === 'AbortError';
+            code: error?.cause?.code || error?.code || null,
+            cause: error?.cause?.message || null,
         
             console.error('[DataMart Verification] Connection error:', {
                 name: error?.name,
