@@ -223,9 +223,6 @@ async function checkDataHubMTN(phoneNumber, isPortedNumber, config) {
             headers: {
                 'Content-Type': 'application/json',
                 'Accept': 'application/json',
-                'Origin': process.env.BACKEND_ORIGIN || 'https://youngster-backend.vercel.app',
-                'Referer': process.env.BACKEND_ORIGIN || 'https://youngster-backend.vercel.app',
-                'User-Agent': 'Mozilla/5.0 (compatible; YoungsterBackend/1.0)',
                 'X-API-Key': apiKey
             },
             body: JSON.stringify({
@@ -700,9 +697,6 @@ async function checkDataMartMTN(phoneNumber) {
                 headers: {
                     'Content-Type': 'application/json',
                     'Accept': 'application/json',
-                    'Origin': process.env.BACKEND_ORIGIN || 'https://youngster-backend.vercel.app',
-                    'Referer': process.env.BACKEND_ORIGIN || 'https://youngster-backend.vercel.app',
-                    'User-Agent': 'Mozilla/5.0 (compatible; YoungsterBackend/1.0)',
                     'X-API-Key': apiKey
                 },
                 body: JSON.stringify({ phoneNumber }),
@@ -727,9 +721,8 @@ async function checkDataMartMTN(phoneNumber) {
         
             console.error('[DataMart Verification] Connection error:', {
                 name: error?.name,
-                code: error?.cause?.code || error?.code || null,
+                code: error?.code || null,
                 message: error?.message || null,
-                cause: error?.cause?.message || null,
                 timedOut,
                 durationMs: typeof startedAt === 'number' ? Date.now() - startedAt : null
             });
@@ -747,6 +740,7 @@ async function checkDataMartMTN(phoneNumber) {
                 }
             };
         }
+
         if (response.status === 429 || data?.code === 'RATE_LIMIT_EXCEEDED') {
             return {
                 ok: false,
@@ -5311,23 +5305,9 @@ async function resolveDjangoMTNFallback(phoneNumber, isPortedNumber, mtnProvider
             };
         }
         if (dataHub.ok && dataHub.servable === false) {
-            // A negative from DataHub cannot be treated as the final answer if
-            // an earlier configured provider failed to complete its check.
-            if (dataMartTemporaryFailure || xpresState.temporary) {
-                return {
-                    ok: false,
-                    status: 503,
-                    code: dataMartTemporaryFailure
-                        ? (dataMart.body?.code || 'DATAMART_VERIFY_FAILED')
-                        : (xpresState.code || 'XPRESSPORTAL_VERIFY_FAILED'),
-                    message: 'One or more MTN verification services could not complete the check. Please try again.',
-                    details: {
-                        dataMart: { temporary: dataMartTemporaryFailure },
-                        xpresPortal: { temporary: xpresState.temporary },
-                        dataHub: { verified: false }
-                    }
-                };
-            }
+            // DataHub gave a definitive rejection — trust it regardless of whether
+            // DataMart or XpresPortal had a temporary failure. DataHub is the final
+            // arbiter; a timeout upstream does not make its negative result unreliable.
             return {
                 ok: true,
                 servable: false,
@@ -5335,7 +5315,11 @@ async function resolveDjangoMTNFallback(phoneNumber, isPortedNumber, mtnProvider
                 config: dataHubConfig,
                 code: dataHub.body?.code || 'DATAHUB_NOT_ELIGIBLE',
                 message: dataHub.message || 'This MTN number is not eligible on DataHub.',
-                details: { dataHub: { verified: false } }
+                details: {
+                    dataHub: { verified: false },
+                    dataMart: { temporary: dataMartTemporaryFailure },
+                    xpresPortal: { temporary: xpresState.temporary }
+                }
             };
         }
         return {
@@ -5350,18 +5334,8 @@ async function resolveDjangoMTNFallback(phoneNumber, isPortedNumber, mtnProvider
     // If XpresPortal gave a definite negative and DataHub is not configured,
     // retain that definitive rejection. A vendor outage remains a retryable error.
     if (xpresState.ok && xpresState.servable === false) {
-        if (dataMartTemporaryFailure) {
-            return {
-                ok: false,
-                status: 503,
-                code: dataMart.body?.code || 'DATAMART_VERIFY_FAILED',
-                message: 'DataMart verification could not complete, so the final MTN eligibility check is inconclusive. Please try again.',
-                details: {
-                    dataMart: { temporary: true },
-                    xpresPortal: { eligible: false }
-                }
-            };
-        }
+        // XpresPortal gave a definitive rejection — trust it even if DataMart
+        // timed out. DataHub is not configured so XpresPortal is the final word.
         return {
             ok: true,
             servable: false,
@@ -5369,7 +5343,10 @@ async function resolveDjangoMTNFallback(phoneNumber, isPortedNumber, mtnProvider
             config: xpresConfig,
             code: xpresState.code || 'XPRESSPORTAL_NOT_ELIGIBLE',
             message: xpresState.message || 'This MTN number is not eligible for data right now.',
-            details: { xpresPortal: { eligible: false, code: xpresState.code || null } }
+            details: {
+                xpresPortal: { eligible: false, code: xpresState.code || null },
+                dataMart: { temporary: dataMartTemporaryFailure }
+            }
         };
     }
 
