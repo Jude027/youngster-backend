@@ -723,13 +723,13 @@ async function checkDataMartMTN(phoneNumber) {
                 };
             }
         } catch (error) {
-            code: error?.cause?.code || error?.code || null,
-            cause: error?.cause?.message || null,
+            const timedOut = error?.name === 'AbortError';
         
             console.error('[DataMart Verification] Connection error:', {
                 name: error?.name,
-                code: error?.code || null,
+                code: error?.cause?.code || error?.code || null,
                 message: error?.message || null,
+                cause: error?.cause?.message || null,
                 timedOut,
                 durationMs: typeof startedAt === 'number' ? Date.now() - startedAt : null
             });
@@ -747,7 +747,6 @@ async function checkDataMartMTN(phoneNumber) {
                 }
             };
         }
-
         if (response.status === 429 || data?.code === 'RATE_LIMIT_EXCEEDED') {
             return {
                 ok: false,
