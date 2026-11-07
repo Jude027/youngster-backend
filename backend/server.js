@@ -205,7 +205,7 @@ async function checkDataHubMTN(phoneNumber, isPortedNumber, config) {
 
     const controller = new AbortController();
     const startedAt = Date.now();
-    const timeoutMs = 15000;
+    const timeoutMs = 8000;
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
     console.log('[DataHub Verification] Request started:', {
@@ -422,7 +422,7 @@ async function checkMamscoMTN(phoneNumber) {
     let timeoutId;
     try {
         const controller = new AbortController();
-        timeoutId = setTimeout(() => controller.abort(), 8000);
+        timeoutId = setTimeout(() => controller.abort(), 5000);
         const response = await fetch('https://mamscoenterprise.com/api/orders/mtn/precheck', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
@@ -678,7 +678,7 @@ async function checkDataMartMTN(phoneNumber) {
 
         const controller = new AbortController();
         const startedAt = Date.now();
-        const timeoutMs = 12000;
+        const timeoutMs = 7000;
         timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
         console.log('[DataMart Verification] Request started:', {
@@ -5145,7 +5145,7 @@ async function resolveDjangoMTNFallback(phoneNumber, isPortedNumber, mtnProvider
         const offerSlug = String(xpresConfig.networkKey || '').trim();
         const xpresBaseUrl = UniversalAPIHandler.cleanBaseUrl(String(xpresConfig.baseUrl || ''));
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 8000);
+        const timeoutId = setTimeout(() => controller.abort(), 5000);
         let xpresResponse = null;
         let xpresBody = null;
         try {
@@ -6820,7 +6820,7 @@ app.post('/api/orders/mtn/verify-datamart', async (req, res) => {
             const offerSlug = String(xpresConfig.networkKey || '').trim();
             const xpresBaseUrl = UniversalAPIHandler.cleanBaseUrl(String(xpresConfig.baseUrl || ''));
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 8000);
+            const timeoutId = setTimeout(() => controller.abort(), 5000);
             let xpresResponse;
             let xpresBody;
             try {
