@@ -54,7 +54,7 @@ app.use(cors({
         const allowedOrigins = [
             'https://youngster-frontend-production.up.railway.app',
             'https://youngster-frontend.vercel.app',
-            'https://youngster-backend.vercel.app',
+            'https://youngster-backend.onrender.com',
             'https://xpresportal.app',
             'https://jdyoungsterent.com',
             'https://www.jdyoungsterent.com',
@@ -5962,7 +5962,7 @@ app.post('/api/payment/verify-otp', async (req, res) => {
         res.json({ success: true, transactionId, message: 'OTP received. A payment prompt will be sent to your phone.' });
 
         // Fire the actual OTP verification as a separate Vercel function invocation
-        const backendUrl = process.env.BACKEND_URL || 'https://youngster-backend.vercel.app';
+        const backendUrl = process.env.BACKEND_URL || 'https://youngster-backend.onrender.com';
         fetch(`${backendUrl}/api/payment/process-otp-internal`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
