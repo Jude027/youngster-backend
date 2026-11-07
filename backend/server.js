@@ -678,7 +678,7 @@ async function checkDataMartMTN(phoneNumber) {
 
         const controller = new AbortController();
         const startedAt = Date.now();
-        const timeoutMs = 7000;
+        const timeoutMs = 5000;
         timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
         console.log('[DataMart Verification] Request started:', {
@@ -5145,7 +5145,7 @@ async function resolveDjangoMTNFallback(phoneNumber, isPortedNumber, mtnProvider
         const offerSlug = String(xpresConfig.networkKey || '').trim();
         const xpresBaseUrl = UniversalAPIHandler.cleanBaseUrl(String(xpresConfig.baseUrl || ''));
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 5000);
+        const timeoutId = setTimeout(() => controller.abort(), 4000);
         let xpresResponse = null;
         let xpresBody = null;
         try {
@@ -6820,7 +6820,7 @@ app.post('/api/orders/mtn/verify-datamart', async (req, res) => {
             const offerSlug = String(xpresConfig.networkKey || '').trim();
             const xpresBaseUrl = UniversalAPIHandler.cleanBaseUrl(String(xpresConfig.baseUrl || ''));
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 5000);
+            const timeoutId = setTimeout(() => controller.abort(), 4000);
             let xpresResponse;
             let xpresBody;
             try {
