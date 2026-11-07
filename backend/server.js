@@ -5212,18 +5212,6 @@ async function resolveDjangoMTNFallback(phoneNumber, isPortedNumber, mtnProvider
             clearTimeout(timeoutId);
         }
 
-        if (xpresResponse && !xpresBody &&
-            (xpresResponse.status === 401 || xpresResponse.status === 403 ||
-                (xpresResponse.status >= 400 && xpresResponse.status < 500 && xpresResponse.status !== 429))) {
-            return {
-                ok: false,
-                status: 503,
-                code: 'XPRESSPORTAL_VERIFY_FAILED',
-                message: 'XpresPortal could not complete the MTN check. Please wait and try again.',
-                details: { xpresPortal: { httpStatus: xpresResponse.status } }
-            };
-        }
-
         if (xpresResponse && xpresBody) {
             if (xpresResponse.ok && xpresBody?.success === true) {
                 const results = xpresBody?.data?.results;
