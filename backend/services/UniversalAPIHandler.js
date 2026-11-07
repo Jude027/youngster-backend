@@ -260,8 +260,8 @@ class UniversalAPIHandler {
                 headers: {
                     'Content-Type': 'application/json',
                     'Accept': 'application/json',
-                    'Origin': process.env.BACKEND_ORIGIN || 'https://youngster-backend.vercel.app',
-                    'Referer': process.env.BACKEND_ORIGIN || 'https://youngster-backend.vercel.app',
+                    'Origin': process.env.BACKEND_ORIGIN || 'https://youngster-backend.onrender.com',
+                    'Referer': process.env.BACKEND_ORIGIN || 'https://youngster-backend.onrender.com',
                     'X-API-Key': apiKey,
                     'X-Idempotency-Key': idempotencyKey
                 },
@@ -387,10 +387,10 @@ class UniversalAPIHandler {
                 'Accept': 'application/json',
                 'Origin':
                     process.env.BACKEND_ORIGIN ||
-                    'https://youngster-backend.vercel.app',
+                    'https://youngster-backend.onrender.com',
                 'Referer':
                     process.env.BACKEND_ORIGIN ||
-                    'https://youngster-backend.vercel.app'
+                    'https://youngster-backend.onrender.com'
             };
         
             console.log('[UniversalAPIHandler] SPFastIT ATI Share request:', {
@@ -797,7 +797,7 @@ class UniversalAPIHandler {
             payload.type = payload.type || 'single';
             payload.webhookUrl = payload.webhookUrl
                 || process.env.XPRES_WEBHOOK_URL
-                || `${process.env.BACKEND_URL || 'https://youngster-backend.vercel.app'}/api/webhooks/xpresportal`;
+                || `${process.env.BACKEND_URL || 'https://youngster-backend.onrender.com'}/api/webhooks/xpresportal`;
             if (payload.msisdn && !payload.phone) { payload.phone = payload.msisdn; delete payload.msisdn; }
             if (payload.recipient && !payload.phone) { payload.phone = payload.recipient; delete payload.recipient; }
             if (payload.capacity !== undefined && payload.volume === undefined) {
@@ -836,8 +836,8 @@ class UniversalAPIHandler {
             'Accept': 'application/json',
             // Some APIs (XpresPortal, DataHub) restrict keys by domain and reject
             // requests without an Origin header from backend servers.
-            'Origin': process.env.BACKEND_ORIGIN || 'https://youngster-backend.vercel.app',
-            'Referer': process.env.BACKEND_ORIGIN || 'https://youngster-backend.vercel.app',
+            'Origin': process.env.BACKEND_ORIGIN || 'https://youngster-backend.onrender.com',
+            'Referer': process.env.BACKEND_ORIGIN || 'https://youngster-backend.onrender.com',
         };
         const authMethod = String(config.authMethod || config.type || '').toLowerCase();
 
