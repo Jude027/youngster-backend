@@ -508,7 +508,7 @@ async function checkMamscoMTN(phoneNumber) {
 // call window in MongoDB (shared across Vercel instances) and cache resolved results
 // briefly per API key + config + phone. We never cache errors/timeouts/429s.
 const DATAMART_VERIFY_WINDOW_MS = 60_000;
-const DATAMART_VERIFY_MAX_CALLS = 2;
+const DATAMART_VERIFY_MAX_CALLS = 10;
 const DATAMART_VERIFY_CACHE_TTL_MS = 60_000;
 let _dataMartCacheIndexPromise = null;
 
@@ -678,6 +678,10 @@ async function checkDataMartMTN(phoneNumber) {
             };
         }
         if (!slot.allowed) {
+            console.warn('[DataMart Rate Guard] Rate limit reached — call blocked', {
+                phoneSuffix: normalizeGhanaLocalPhone(phoneNumber).slice(-4),
+                retryAfter: slot.retryAfter
+            });
             return {
                 ok: false,
                 status: 429,
