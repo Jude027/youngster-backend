@@ -434,6 +434,13 @@ async function checkMamscoMTN(phoneNumber) {
         try {
             data = await response.json();
         } catch (_) {
+            const rawText = await response.text().catch(() => '');
+            console.warn('[Mamsco MTN Check] JSON parse failed:', {
+                phoneSuffix: normalizeGhanaLocalPhone(phoneNumber).slice(-4),
+                status: response.status,
+                contentType: response.headers.get('content-type'),
+                rawSample: rawText.slice(0, 200)
+            });
             return {
                 ok: false,
                 status: 502,
@@ -454,6 +461,14 @@ async function checkMamscoMTN(phoneNumber) {
 
         const verification = Array.isArray(data?.results) ? data.results[0] : null;
         if (!verification || typeof verification.valid !== 'boolean' || typeof verification.known !== 'boolean') {
+            console.warn('[Mamsco MTN Check] Unexpected response structure:', {
+                phoneSuffix: normalizeGhanaLocalPhone(phoneNumber).slice(-4),
+                responseKeys: Object.keys(data || {}),
+                resultsIsArray: Array.isArray(data?.results),
+                resultsLength: Array.isArray(data?.results) ? data.results.length : null,
+                firstResultKeys: data?.results?.[0] ? Object.keys(data.results[0]) : null,
+                rawSample: JSON.stringify(data).slice(0, 300)
+            });
             return {
                 ok: false,
                 status: 502,
@@ -5369,25 +5384,31 @@ app.post('/api/payment/verify-beneficiary', async (req, res) => {
                 phoneSuffix: phoneNumber.slice(-4),
                 code: mamsco.code
             });
-            return res.status(mamsco.status).json({
-                success: false,
-                verified: false,
-                code: mamsco.code,
-                message: mamsco.message
-            });
+            // MAMSCO_INVALID_RESPONSE means Mamsco returned unexpected data —
+            // fall through to the fallback chain instead of hard-stopping.
+            // Only hard-stop on genuine network/service unavailability.
+            if (mamsco.code !== 'MAMSCO_INVALID_RESPONSE') {
+                return res.status(mamsco.status).json({
+                    success: false,
+                    verified: false,
+                    code: mamsco.code,
+                    message: mamsco.message
+                });
+            }
+            // Fall through to fallback chain with empty mamscoFlags
         }
 
         const mamscoFlags = {
-            valid: mamsco.verification.valid,
-            known: mamsco.verification.known
+            valid: mamsco.verification?.valid ?? null,
+            known: mamsco.verification?.known ?? null
         };
         console.log('[VerifyBeneficiary] Mamsco result', {
             phoneSuffix: phoneNumber.slice(-4),
             ...mamscoFlags,
-            verified: mamsco.verified
+            verified: mamsco.verified ?? false
         });
 
-        if (mamsco.verified) {
+        if (mamsco.ok && mamsco.verified) {
             console.log('[VerifyBeneficiary] Accepted through Mamsco', { phoneSuffix: phoneNumber.slice(-4) });
             return res.json({
                 ...mamsco.data,
