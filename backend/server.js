@@ -205,7 +205,7 @@ async function checkDataHubMTN(phoneNumber, isPortedNumber, config) {
 
     const controller = new AbortController();
     const startedAt = Date.now();
-    const timeoutMs = 12000;
+    const timeoutMs = 15000;
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
     console.log('[DataHub Verification] Request started:', {
@@ -678,7 +678,7 @@ async function checkDataMartMTN(phoneNumber) {
 
         const controller = new AbortController();
         const startedAt = Date.now();
-        const timeoutMs = 8000;
+        const timeoutMs = 3000;
         timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
         console.log('[DataMart Verification] Request started:', {
