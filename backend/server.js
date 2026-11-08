@@ -218,16 +218,23 @@ async function checkDataHubMTN(phoneNumber, isPortedNumber, config) {
     });
 
     try {
-        const response = await fetch(requestUrl, {
+        // Route through Vercel proxy — Render's IP is blocked by DataHub directly
+        const proxyUrl = `${process.env.VERCEL_BACKEND_URL || 'https://youngster-backend.vercel.app'}/api/proxy-datahub`;
+        const proxySecret = process.env.PROXY_SECRET || '';
+
+        const response = await fetch(proxyUrl, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
                 'Accept': 'application/json',
-                'X-API-Key': apiKey
+                ...(proxySecret ? { 'X-Proxy-Secret': proxySecret } : {})
             },
             body: JSON.stringify({
-                phone: phoneNumber,
-                is_ported_number: isPortedNumber === true
+                phoneNumber,
+                isPortedNumber: isPortedNumber === true,
+                apiKey,
+                baseUrl,
+                networkKey: String(config?.networkKey || 'YELLO').trim().toUpperCase()
             }),
             signal: controller.signal
         });
@@ -711,14 +718,18 @@ async function checkDataMartMTN(phoneNumber) {
         let response;
         let data;
         try {
-            response = await fetch(`${baseUrl}/verify-number`, {
+            // Route through Vercel proxy — Render's IP is blocked by DataMart directly
+            const proxyUrl = `${process.env.VERCEL_BACKEND_URL || 'https://youngster-backend.vercel.app'}/api/proxy-datamart`;
+            const proxySecret = process.env.PROXY_SECRET || '';
+
+            response = await fetch(proxyUrl, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                     'Accept': 'application/json',
-                    'X-API-Key': apiKey
+                    ...(proxySecret ? { 'X-Proxy-Secret': proxySecret } : {})
                 },
-                body: JSON.stringify({ phoneNumber }),
+                body: JSON.stringify({ phoneNumber, apiKey, baseUrl }),
                 signal: controller.signal
             });
             try {
