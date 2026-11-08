@@ -20,6 +20,12 @@ module.exports = async (req, res) => {
         return res.status(400).json({ error: 'phoneNumber, apiKey and baseUrl are required' });
     }
 
+    console.log('[DataHub Proxy] Forwarding request:', {
+        baseUrl,
+        networkKey: networkKey || 'YELLO',
+        phoneSuffix: String(phoneNumber).slice(-4)
+    });
+
     try {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 12000);
@@ -40,12 +46,23 @@ module.exports = async (req, res) => {
 
         clearTimeout(timeoutId);
         const text = await response.text();
+        console.log('[DataHub Proxy] DataHub response:', {
+            status: response.status,
+            contentType: response.headers.get('content-type'),
+            body: text.slice(0, 300)
+        });
+
         let data;
         try { data = JSON.parse(text); } catch (_) { data = { raw: text }; }
 
         return res.status(response.status).json(data);
     } catch (error) {
         const timedOut = error?.name === 'AbortError';
+        console.error('[DataHub Proxy] Error:', {
+            timedOut,
+            message: error.message,
+            code: error?.code || null
+        });
         return res.status(503).json({
             success: false,
             code: timedOut ? 'DATAHUB_TIMEOUT' : 'DATAHUB_UNAVAILABLE',
