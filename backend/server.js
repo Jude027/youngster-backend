@@ -196,6 +196,31 @@ function getDataHubMTNEligibility(body) {
     return null;
 }
 
+// ─── Auto-capture helper ───────────────────────────────────────────────────────
+// Fire-and-forget: saves a per-number record to MtnVerification.
+// Never throws — always called with .catch(() => {}) to avoid crashing callers.
+async function captureNumberRecord({
+    phoneNumber, status, network = 'MTN',
+    verifiedBy = null, rejectedBy = null, rejectionCode = null,
+    source = 'auto_verify', orderId = null, packageName = null,
+    amount = null, userId = null, storeSlug = null,
+    username = '', clientType = null, note = ''
+}) {
+    try {
+        await MtnVerification.create({
+            phoneNumber: normalizeGhanaLocalPhone(phoneNumber),
+            status, network, verifiedBy, rejectedBy, rejectionCode,
+            source, orderId, packageName, amount,
+            userId, storeSlug, username, clientType, note,
+            capturedAt: new Date()
+        });
+    } catch (err) {
+        // Duplicate key or other non-critical error — log and swallow
+        if (err?.code !== 11000) {
+            console.warn('[NumberCapture] Failed to save record:', err.message);
+        }
+    }
+}
 
 async function checkDataHubMTN(phoneNumber, isPortedNumber, config) {
     const apiKey = String(config?.authHeaderValue || config?.apiKey || '').trim();
@@ -2173,6 +2198,20 @@ async function submitOrderToProvider(order, orderData) {
         // routing and leave the order as pending for manual fulfilment.
         if (orderData.isUnverified) {
             console.log(`[ProviderSubmit] Number is unverified — skipping API/WhatsApp routing, order left pending for manual fulfilment`);
+            // Auto-capture unverified number with full order context
+            captureNumberRecord({
+                phoneNumber: orderData.phoneNumber,
+                status: 'unverified',
+                network: /mtn/i.test(String(providerName || '')) ? 'MTN' : providerName,
+                source: 'auto_order',
+                orderId: order?._id || null,
+                packageName: orderData.packageName || null,
+                amount: orderData.price || null,
+                userId: order?.userId || null,
+                storeSlug: order?.storeSlug || null,
+                clientType: order?.clientType || null,
+                note: 'Auto-captured: unverified order pending manual fulfilment'
+            }).catch(() => {});
             return { success: true, message: 'Order created. Unverified number — requires manual fulfilment.', automated: false };
         }
 
@@ -2265,6 +2304,24 @@ async function submitOrderToProvider(order, orderData) {
             providerReference: order.providerReference,
             providerOrderId: order.providerOrderId
         });
+
+        // Auto-capture every successfully submitted order — builds the general all-networks database
+        captureNumberRecord({
+            phoneNumber: orderData.phoneNumber,
+            status: 'verified',
+            network: /mtn/i.test(String(providerName || '')) ? 'MTN'
+                : /telecel|voda/i.test(String(providerName || '')) ? 'Telecel'
+                : /at |airteltigo|ishare|bigtime/i.test(String(providerName || '')) ? 'AT'
+                : providerName,
+            verifiedBy: 'order_success',
+            source: 'auto_order',
+            orderId: order?._id || null,
+            packageName: orderData.packageName || null,
+            amount: orderData.price || null,
+            userId: order?.userId || null,
+            storeSlug: order?.storeSlug || null,
+            clientType: order?.clientType || null,
+        }).catch(() => {});
     } else if (result?.message) {
         const providerMessage = result.actionRequired === 'TOP_UP_IGET_WALLET'
             ? `Action required: ${result.message}`
@@ -5425,6 +5482,11 @@ app.post('/api/payment/verify-beneficiary', async (req, res) => {
 
         if (mamsco.ok && mamsco.verified) {
             console.log('[VerifyBeneficiary] Accepted through Mamsco', { phoneSuffix: phoneNumber.slice(-4) });
+            // Auto-capture verified number
+            captureNumberRecord({
+                phoneNumber, status: 'verified', network: 'MTN',
+                verifiedBy: 'Mamsco', source: 'auto_verify'
+            }).catch(() => {});
             return res.json({
                 ...mamsco.data,
                 success: true,
@@ -5469,6 +5531,13 @@ app.post('/api/payment/verify-beneficiary', async (req, res) => {
                 phoneSuffix: phoneNumber.slice(-4),
                 verifiedBy: fallback.provider
             });
+            // Auto-capture unverified number
+            captureNumberRecord({
+                phoneNumber, status: 'unverified', network: 'MTN',
+                rejectedBy: fallback.provider,
+                rejectionCode: fallback.code || null,
+                source: 'auto_verify'
+            }).catch(() => {});
             return res.status(422).json({
                 success: false,
                 verified: false,
@@ -5488,6 +5557,11 @@ app.post('/api/payment/verify-beneficiary', async (req, res) => {
             verifiedBy: fallback.provider,
             configName: fallback.config.name
         });
+        // Auto-capture verified number
+        captureNumberRecord({
+            phoneNumber, status: 'verified', network: 'MTN',
+            verifiedBy: fallback.provider, source: 'auto_verify'
+        }).catch(() => {});
         return res.json({
             success: true,
             verified: true,
@@ -6816,6 +6890,7 @@ app.post('/api/orders/mtn/verify-datamart', async (req, res) => {
                 routeConfig: result.orderApiConfig,
                 cached: result.cached
             });
+            captureNumberRecord({ phoneNumber, status: 'verified', network: 'MTN', verifiedBy: 'DataMart', source: 'auto_verify' }).catch(() => {});
             return res.json(result);
         }
 
@@ -6910,6 +6985,7 @@ app.post('/api/orders/mtn/verify-datamart', async (req, res) => {
                                 phoneSuffix: phoneNumber.slice(-4),
                                 routeConfig: result.orderApiConfig
                             });
+                            captureNumberRecord({ phoneNumber, status: 'verified', network: 'MTN', verifiedBy: 'XpresPortal', source: 'auto_verify' }).catch(() => {});
                             return res.json(result);
                         }
                     }
@@ -6962,6 +7038,7 @@ app.post('/api/orders/mtn/verify-datamart', async (req, res) => {
                     routeConfig: dataHubConfig.name,
                     networkKey: dataHubConfig.networkKey || 'YELLO'
                 });
+                captureNumberRecord({ phoneNumber, status: 'verified', network: 'MTN', verifiedBy: 'DataHub', source: 'auto_verify' }).catch(() => {});
                 return res.json(result);
             }
             if (dataHub.ok && dataHub.servable === false) {
@@ -6969,6 +7046,7 @@ app.post('/api/orders/mtn/verify-datamart', async (req, res) => {
                     phoneSuffix: phoneNumber.slice(-4),
                     routeConfig: dataHubConfig.name
                 });
+                captureNumberRecord({ phoneNumber, status: 'unverified', network: 'MTN', rejectedBy: 'DataHub', rejectionCode: dataHub.body?.code || null, source: 'auto_verify' }).catch(() => {});
                 return res.json({
                     success: true,
                     servable: false,
@@ -7195,14 +7273,22 @@ app.post('/api/mtn-verification', async (req, res) => {
             }
         } catch (_) { /* token optional */ }
 
-        const submission = new MtnVerification({
-            userId,
+        // Save one record per number (new per-number schema)
+        const records = cleaned.map(num => ({
+            phoneNumber: normalizeGhanaLocalPhone(num),
+            status: 'pending',
+            network: 'MTN',
+            source: 'agent_submission',
+            userId: userId || null,
             storeSlug: resolvedSlug || null,
             username,
-            numbers: cleaned,
             note: String(note || '').trim(),
+            capturedAt: new Date()
+        }));
+        await MtnVerification.insertMany(records, { ordered: false }).catch(err => {
+            // ordered: false lets valid records save even if some are duplicates
+            if (err?.code !== 11000) throw err;
         });
-        await submission.save();
 
         res.json({ success: true, message: `${cleaned.length} number(s) submitted successfully.`, count: cleaned.length });
     } catch (err) {
@@ -7211,19 +7297,221 @@ app.post('/api/mtn-verification', async (req, res) => {
     }
 });
 
-// Admin: get all MTN verification submissions
-app.get('/api/admin/mtn-verifications', auth, admin, async (req, res) => {
+// ==================== NUMBER DATABASE ADMIN API ====================
+
+// GET /api/admin/number-database
+// Query params: status, network, source, storeSlug, dateFrom, dateTo, search, page, limit
+app.get('/api/admin/number-database', auth, admin, async (req, res) => {
     try {
-        const submissions = await MtnVerification.find()
-            .sort({ submitted: -1 })
-            .lean();
-        res.json(submissions);
+        const {
+            status, network, source, storeSlug,
+            dateFrom, dateTo, search,
+            page = 1, limit = 100
+        } = req.query;
+
+        const filter = {};
+        if (status && status !== 'all') filter.status = status;
+        if (network && network !== 'all') filter.network = new RegExp(network, 'i');
+        if (source && source !== 'all') filter.source = source;
+        if (storeSlug) filter.storeSlug = storeSlug;
+        if (dateFrom || dateTo) {
+            filter.capturedAt = {};
+            if (dateFrom) filter.capturedAt.$gte = new Date(dateFrom);
+            if (dateTo) {
+                const end = new Date(dateTo);
+                end.setHours(23, 59, 59, 999);
+                filter.capturedAt.$lte = end;
+            }
+        }
+        if (search) {
+            filter.$or = [
+                { phoneNumber: new RegExp(search.replace(/\D/g, ''), 'i') },
+                { storeSlug: new RegExp(search, 'i') },
+                { username: new RegExp(search, 'i') },
+                { packageName: new RegExp(search, 'i') }
+            ];
+        }
+
+        const pageNum = Math.max(1, parseInt(page));
+        const limitNum = Math.min(500, Math.max(1, parseInt(limit)));
+        const skip = (pageNum - 1) * limitNum;
+
+        const [records, total] = await Promise.all([
+            MtnVerification.find(filter)
+                .sort({ capturedAt: -1 })
+                .skip(skip)
+                .limit(limitNum)
+                .lean(),
+            MtnVerification.countDocuments(filter)
+        ]);
+
+        res.json({
+            records,
+            total,
+            page: pageNum,
+            pages: Math.ceil(total / limitNum),
+            limit: limitNum
+        });
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
 });
 
-// Admin: delete a submission
+// GET /api/admin/number-database/stats — counts by status/network for dashboard badges
+app.get('/api/admin/number-database/stats', auth, admin, async (req, res) => {
+    try {
+        const [byStatus, byNetwork, bySource, recent] = await Promise.all([
+            MtnVerification.aggregate([
+                { $group: { _id: '$status', count: { $sum: 1 } } }
+            ]),
+            MtnVerification.aggregate([
+                { $group: { _id: '$network', count: { $sum: 1 } } }
+            ]),
+            MtnVerification.aggregate([
+                { $group: { _id: '$source', count: { $sum: 1 } } }
+            ]),
+            MtnVerification.countDocuments({
+                capturedAt: { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) }
+            })
+        ]);
+
+        const statusMap = Object.fromEntries(byStatus.map(s => [s._id, s.count]));
+        const networkMap = Object.fromEntries(byNetwork.map(n => [n._id, n.count]));
+        const sourceMap = Object.fromEntries(bySource.map(s => [s._id, s.count]));
+
+        res.json({
+            total: Object.values(statusMap).reduce((a, b) => a + b, 0),
+            verified: statusMap.verified || 0,
+            unverified: statusMap.unverified || 0,
+            pending: statusMap.pending || 0,
+            byNetwork: networkMap,
+            bySource: sourceMap,
+            last24h: recent
+        });
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+});
+
+// GET /api/admin/number-database/export — returns CSV for download
+app.get('/api/admin/number-database/export', auth, admin, async (req, res) => {
+    try {
+        const { status, network, source, storeSlug, dateFrom, dateTo } = req.query;
+
+        const filter = {};
+        if (status && status !== 'all') filter.status = status;
+        if (network && network !== 'all') filter.network = new RegExp(network, 'i');
+        if (source && source !== 'all') filter.source = source;
+        if (storeSlug) filter.storeSlug = storeSlug;
+        if (dateFrom || dateTo) {
+            filter.capturedAt = {};
+            if (dateFrom) filter.capturedAt.$gte = new Date(dateFrom);
+            if (dateTo) {
+                const end = new Date(dateTo);
+                end.setHours(23, 59, 59, 999);
+                filter.capturedAt.$lte = end;
+            }
+        }
+
+        const records = await MtnVerification.find(filter)
+            .sort({ capturedAt: -1 })
+            .limit(10000)
+            .lean();
+
+        const esc = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
+        const headers = ['Phone Number', 'Status', 'Network', 'Verified By', 'Rejected By', 'Rejection Code', 'Source', 'Package', 'Amount (GHS)', 'Store', 'Client Type', 'Captured At'];
+        const rows = records.map(r => [
+            esc(r.phoneNumber),
+            esc(r.status),
+            esc(r.network),
+            esc(r.verifiedBy || ''),
+            esc(r.rejectedBy || ''),
+            esc(r.rejectionCode || ''),
+            esc(r.source),
+            esc(r.packageName || ''),
+            esc(r.amount ?? ''),
+            esc(r.storeSlug || ''),
+            esc(r.clientType || ''),
+            esc(r.capturedAt ? new Date(r.capturedAt).toLocaleString() : '')
+        ].join(','));
+
+        const csv = [headers.join(','), ...rows].join('\r\n');
+        const filename = `number-database-${new Date().toISOString().slice(0, 10)}.csv`;
+
+        res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        res.send('\uFEFF' + csv); // BOM for Excel UTF-8 compatibility
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+});
+
+// DELETE /api/admin/number-database/:id — delete single record
+app.delete('/api/admin/number-database/:id', auth, admin, async (req, res) => {
+    try {
+        await MtnVerification.findByIdAndDelete(req.params.id);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+});
+
+// DELETE /api/admin/number-database — bulk delete by filter
+app.delete('/api/admin/number-database', auth, admin, async (req, res) => {
+    try {
+        const { status, network, source, ids } = req.body;
+        let filter = {};
+        if (Array.isArray(ids) && ids.length) {
+            filter._id = { $in: ids };
+        } else {
+            if (status && status !== 'all') filter.status = status;
+            if (network && network !== 'all') filter.network = new RegExp(network, 'i');
+            if (source && source !== 'all') filter.source = source;
+        }
+        if (!Object.keys(filter).length) {
+            return res.status(400).json({ message: 'Provide ids, status, network or source to delete.' });
+        }
+        const result = await MtnVerification.deleteMany(filter);
+        res.json({ success: true, deleted: result.deletedCount });
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+});
+
+// PATCH /api/admin/number-database/:id — update status of a record (e.g. mark as verified after manual check)
+app.patch('/api/admin/number-database/:id', auth, admin, async (req, res) => {
+    try {
+        const { status, note } = req.body;
+        const update = {};
+        if (status) update.status = status;
+        if (note !== undefined) update.note = note;
+        const record = await MtnVerification.findByIdAndUpdate(req.params.id, update, { new: true });
+        if (!record) return res.status(404).json({ message: 'Record not found' });
+        res.json(record);
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+});
+
+// Keep old endpoints for backwards compatibility with existing admin UI
+app.get('/api/admin/mtn-verifications', auth, admin, async (req, res) => {
+    try {
+        const records = await MtnVerification.find({ source: 'agent_submission' })
+            .sort({ capturedAt: -1 })
+            .lean();
+        // Return in old format so existing admin.js doesn't break
+        const grouped = {};
+        records.forEach(r => {
+            const key = `${r.username || r.storeSlug || 'unknown'}_${new Date(r.capturedAt).toDateString()}`;
+            if (!grouped[key]) grouped[key] = { _id: r._id, userId: r.userId, storeSlug: r.storeSlug, username: r.username, numbers: [], note: r.note, submitted: r.capturedAt };
+            grouped[key].numbers.push(r.phoneNumber);
+        });
+        res.json(Object.values(grouped).sort((a, b) => new Date(b.submitted) - new Date(a.submitted)));
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+});
+
 app.delete('/api/admin/mtn-verifications/:id', auth, admin, async (req, res) => {
     try {
         await MtnVerification.findByIdAndDelete(req.params.id);
