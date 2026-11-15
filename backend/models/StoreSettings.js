@@ -10,6 +10,8 @@ const storeSettingsSchema = new mongoose.Schema({
     whatsappGroupLink: { type: String, default: '' },
     whatsappNumber: { type: String, default: '' },
     useShortLink: { type: Boolean, default: false },
+    // Optional: links this store to a Django seller account for shop routing
+    djangoSellerId: { type: Number, default: null },
     updatedAt: { type: Date, default: Date.now }
 });
 
