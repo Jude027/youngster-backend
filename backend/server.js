@@ -3474,6 +3474,56 @@ app.put('/api/store-settings', auth, async (req, res) => {
 app.get('/api/storefront-settings/django-seller-id', async (req, res) => {
     try {
         const { storeSlug } = req.query;
+
+// ── Admin: auto-link Django sellers to new site stores by phone/email match ───
+app.post('/api/admin/auto-link-django-sellers', auth, admin, async (req, res) => {
+    try {
+        const djangoBase = 'https://youngsterentgh.pythonanywhere.com';
+        const secret = process.env.SELLER_SYNC_SECRET || '';
+        const url = `${djangoBase}/api/sellers/?secret=${encodeURIComponent(secret)}`;
+
+        const response = await fetch(url, { signal: AbortSignal.timeout(10000) });
+        if (!response.ok) {
+            return res.status(502).json({ message: 'Could not fetch sellers from Django site.' });
+        }
+        const { sellers } = await response.json();
+        if (!sellers?.length) return res.json({ linked: 0, message: 'No sellers returned from Django.' });
+
+        // Load all users and their store settings on the new site
+        const allStoreSettings = await StoreSettings.find().populate('userId', 'phone email').lean();
+
+        let linked = 0;
+        const results = [];
+
+        for (const djangoSeller of sellers) {
+            const djangoPhone = String(djangoSeller.phone || '').replace(/\D/g, '').replace(/^233/, '0');
+            const djangoEmail = String(djangoSeller.email || '').toLowerCase().trim();
+
+            const match = allStoreSettings.find(s => {
+                const userPhone = String(s.userId?.phone || '').replace(/\D/g, '').replace(/^233/, '0');
+                const userEmail = String(s.userId?.email || '').toLowerCase().trim();
+                return (djangoPhone && djangoPhone === userPhone) || (djangoEmail && djangoEmail === userEmail);
+            });
+
+            if (match && match.djangoSellerId !== djangoSeller.id) {
+                await StoreSettings.updateOne({ _id: match._id }, { djangoSellerId: djangoSeller.id });
+                linked++;
+                results.push({
+                    storeSlug: match.storeSlug,
+                    storeName: match.storeName,
+                    djangoSellerId: djangoSeller.id,
+                    djangoSellerName: djangoSeller.name
+                });
+            }
+        }
+
+        res.json({ linked, message: `Linked ${linked} store(s) to Django seller accounts.`, results });
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+});
+
+
         if (!storeSlug) return res.json({ djangoSellerId: null });
         const settings = await StoreSettings.findOne({
             $or: [{ storeSlug }, { previousSlugs: storeSlug }]
