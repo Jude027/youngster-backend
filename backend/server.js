@@ -3441,7 +3441,7 @@ app.get('/api/store-settings', auth, async (req, res) => {
 
 app.put('/api/store-settings', auth, async (req, res) => {
     try {
-        const { storeName, storeDescription, storeLogo, whatsappGroupLink, whatsappNumber } = req.body;
+        const { storeName, storeDescription, storeLogo, whatsappGroupLink, whatsappNumber, djangoSellerId } = req.body;
         let settings = await StoreSettings.findOne({ userId: req.user.id });
         if (!settings) settings = new StoreSettings({ userId: req.user.id });
         if (storeName !== undefined) {
@@ -3459,6 +3459,7 @@ app.put('/api/store-settings', auth, async (req, res) => {
         if (storeLogo !== undefined) settings.storeLogo = storeLogo;
         if (whatsappGroupLink !== undefined) settings.whatsappGroupLink = whatsappGroupLink;
         if (whatsappNumber !== undefined) settings.whatsappNumber = whatsappNumber;
+        if (djangoSellerId !== undefined) settings.djangoSellerId = djangoSellerId ? Number(djangoSellerId) : null;
         settings.updatedAt = Date.now();
         await settings.save();
         await User.findByIdAndUpdate(req.user.id, { storeDescription, whatsappGroupLink, whatsappNumber, storeLogo });
@@ -3468,9 +3469,27 @@ app.put('/api/store-settings', auth, async (req, res) => {
     }
 });
 
-// ==================== BALANCE & WITHDRAWALS ====================
-app.get('/api/balance', auth, async (req, res) => {
+// ── Public: resolve Django seller ID for a store slug ─────────────────────────
+// Called by the new site's dashboard to route shop clicks to the right storefront.
+app.get('/api/storefront-settings/django-seller-id', async (req, res) => {
     try {
+        const { storeSlug } = req.query;
+        if (!storeSlug) return res.json({ djangoSellerId: null });
+        const settings = await StoreSettings.findOne({
+            $or: [{ storeSlug }, { previousSlugs: storeSlug }]
+        }).lean();
+        if (!settings || !settings.djangoSellerId) return res.json({ djangoSellerId: null });
+        res.json({
+            djangoSellerId: settings.djangoSellerId,
+            sellerName: settings.storeName || null
+        });
+    } catch (err) {
+        res.status(500).json({ djangoSellerId: null });
+    }
+});
+
+// ==================== BALANCE & WITHDRAWALS ====================
+app.get('/api/balance', auth, async (req, res) => {    try {
         const userId = new (require('mongoose').Types.ObjectId)(req.user.id);
 
         // Compute live balance = total commissions earned minus total approved withdrawals.
