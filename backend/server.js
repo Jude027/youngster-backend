@@ -4158,6 +4158,7 @@ app.put('/api/admin/store-settings/:id', auth, admin, async (req, res) => {
         const { storeName, storeDescription, whatsappNumber, whatsappGroupLink, useShortLink } = req.body;
         const update = { storeName, storeDescription, whatsappNumber, whatsappGroupLink };
         if (useShortLink !== undefined) update.useShortLink = Boolean(useShortLink);
+        if (req.body.djangoSellerId !== undefined) update.djangoSellerId = req.body.djangoSellerId ? Number(req.body.djangoSellerId) : null;
         const settings = await StoreSettings.findByIdAndUpdate(req.params.id, update, { new: true });
         res.json(settings);
     } catch (err) {
