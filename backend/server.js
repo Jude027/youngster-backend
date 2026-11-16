@@ -3482,7 +3482,14 @@ app.post('/api/admin/auto-link-django-sellers', auth, admin, async (req, res) =>
         const secret = process.env.SELLER_SYNC_SECRET || '';
         const url = `${djangoBase}/api/sellers/?secret=${encodeURIComponent(secret)}`;
 
-        const response = await fetch(url, { signal: AbortSignal.timeout(10000) });
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 10000);
+        let response;
+        try {
+            response = await fetch(url, { signal: controller.signal });
+        } finally {
+            clearTimeout(timeoutId);
+        }
         if (!response.ok) {
             return res.status(502).json({ message: 'Could not fetch sellers from Django site.' });
         }
