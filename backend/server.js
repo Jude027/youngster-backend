@@ -3471,9 +3471,23 @@ app.put('/api/store-settings', auth, async (req, res) => {
 
 // ── Public: resolve Django seller ID for a store slug ─────────────────────────
 // Called by the new site's dashboard to route shop clicks to the right storefront.
+// ── Public: resolve Django seller ID for a store slug ─────────────────────────
 app.get('/api/storefront-settings/django-seller-id', async (req, res) => {
     try {
         const { storeSlug } = req.query;
+        if (!storeSlug) return res.json({ djangoSellerId: null });
+        const settings = await StoreSettings.findOne({
+            $or: [{ storeSlug }, { previousSlugs: storeSlug }]
+        }).lean();
+        if (!settings || !settings.djangoSellerId) return res.json({ djangoSellerId: null });
+        res.json({
+            djangoSellerId: settings.djangoSellerId,
+            sellerName: settings.storeName || null
+        });
+    } catch (err) {
+        res.status(500).json({ djangoSellerId: null });
+    }
+});
 
 // ── Admin: auto-link Django sellers to new site stores by phone/email match ───
 app.post('/api/admin/auto-link-django-sellers', auth, admin, async (req, res) => {
@@ -3496,52 +3510,27 @@ app.post('/api/admin/auto-link-django-sellers', auth, admin, async (req, res) =>
         const { sellers } = await response.json();
         if (!sellers?.length) return res.json({ linked: 0, message: 'No sellers returned from Django.' });
 
-        // Load all users and their store settings on the new site
         const allStoreSettings = await StoreSettings.find().populate('userId', 'phone email').lean();
-
         let linked = 0;
         const results = [];
 
         for (const djangoSeller of sellers) {
             const djangoPhone = String(djangoSeller.phone || '').replace(/\D/g, '').replace(/^233/, '0');
             const djangoEmail = String(djangoSeller.email || '').toLowerCase().trim();
-
             const match = allStoreSettings.find(s => {
                 const userPhone = String(s.userId?.phone || '').replace(/\D/g, '').replace(/^233/, '0');
                 const userEmail = String(s.userId?.email || '').toLowerCase().trim();
                 return (djangoPhone && djangoPhone === userPhone) || (djangoEmail && djangoEmail === userEmail);
             });
-
             if (match && match.djangoSellerId !== djangoSeller.id) {
                 await StoreSettings.updateOne({ _id: match._id }, { djangoSellerId: djangoSeller.id });
                 linked++;
-                results.push({
-                    storeSlug: match.storeSlug,
-                    storeName: match.storeName,
-                    djangoSellerId: djangoSeller.id,
-                    djangoSellerName: djangoSeller.name
-                });
+                results.push({ storeSlug: match.storeSlug, storeName: match.storeName, djangoSellerId: djangoSeller.id, djangoSellerName: djangoSeller.name });
             }
         }
-
         res.json({ linked, message: `Linked ${linked} store(s) to Django seller accounts.`, results });
     } catch (err) {
         res.status(500).json({ message: err.message });
-    }
-});
-
-
-        if (!storeSlug) return res.json({ djangoSellerId: null });
-        const settings = await StoreSettings.findOne({
-            $or: [{ storeSlug }, { previousSlugs: storeSlug }]
-        }).lean();
-        if (!settings || !settings.djangoSellerId) return res.json({ djangoSellerId: null });
-        res.json({
-            djangoSellerId: settings.djangoSellerId,
-            sellerName: settings.storeName || null
-        });
-    } catch (err) {
-        res.status(500).json({ djangoSellerId: null });
     }
 });
 
