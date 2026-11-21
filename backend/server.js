@@ -3505,7 +3505,8 @@ app.post('/api/admin/auto-link-django-sellers', auth, admin, async (req, res) =>
             clearTimeout(timeoutId);
         }
         if (!response.ok) {
-            return res.status(502).json({ message: 'Could not fetch sellers from Django site.' });
+            const body = await response.text().catch(() => '');
+            return res.status(502).json({ message: `Could not fetch sellers from Django site. Status: ${response.status}. Body: ${body.slice(0, 200)}` });
         }
         const { sellers } = await response.json();
         if (!sellers?.length) return res.json({ linked: 0, message: 'No sellers returned from Django.' });
@@ -6770,6 +6771,51 @@ app.post('/api/admin/reconcile-payments', auth, admin, async (req, res) => {
 });
 
 // Called by Vercel Cron every 10 minutes. This is the sole scheduled payment
+// ── Cron proxy: trigger Django Jobs Arena auto-import ─────────────────────────
+// Called by Render's built-in cron scheduler (set up in render.yaml or dashboard).
+// Render → this endpoint → Django /jobs-arena/auto-import/
+// This avoids PythonAnywhere free-plan restrictions on outbound scheduled tasks.
+// Set up in Render dashboard: Cron Job → GET /api/cron/import-jobs every 6 hours.
+app.get('/api/cron/import-jobs', async (req, res) => {
+    const secret = process.env.CRON_SECRET;
+    const authHeader = req.headers['authorization'];
+    if (!secret || authHeader !== `Bearer ${secret}`) {
+        return res.status(401).json({ error: 'Unauthorized' });
+    }
+    try {
+        const djangoBase = 'https://youngsterentgh.pythonanywhere.com';
+        const sellerSecret = process.env.SELLER_SYNC_SECRET || '';
+        const url = `${djangoBase}/jobs-arena/auto-import/?secret=${encodeURIComponent(sellerSecret)}`;
+
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s — scraping takes time
+        let response;
+        try {
+            response = await fetch(url, { signal: controller.signal });
+        } finally {
+            clearTimeout(timeoutId);
+        }
+
+        const text = await response.text();
+        let data;
+        try { data = JSON.parse(text); } catch (_) { data = { raw: text }; }
+
+        console.log('[JobsCron] Import result:', data);
+        return res.json({
+            success: response.ok,
+            status: response.status,
+            result: data
+        });
+    } catch (err) {
+        const timedOut = err?.name === 'AbortError';
+        console.error('[JobsCron] Import failed:', err.message);
+        return res.status(503).json({
+            success: false,
+            error: timedOut ? 'Django import request timed out' : err.message
+        });
+    }
+});
+
 // reconciler; it also ensures ordinary Order/Transaction records exist for
 // inconclusive attempts. It never marks an inconclusive payment as failed.
 app.get('/api/cron/update-order-status', async (req, res) => {
