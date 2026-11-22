@@ -7639,18 +7639,22 @@ app.delete('/api/admin/mtn-verifications/:id', auth, admin, async (req, res) => 
 app.get('/shop', (req, res) => {
     res.redirect(301, 'https://youngsterentgh.pythonanywhere.com/shop/');
 });
-app.get('/shop/:path(*)', (req, res) => {
-    const path = req.params.path ? '/' + req.params.path : '';
-    res.redirect(301, `https://youngsterentgh.pythonanywhere.com/shop${path}`);
-});
 app.get('/jobs', (req, res) => {
     res.redirect(301, 'https://youngsterentgh.pythonanywhere.com/jobs-arena/');
 });
-app.get('/jobs/:path(*)', (req, res) => {
+app.get('/services', (req, res) => {
+    // Jobs Arena Browse tab — where service providers are listed
     res.redirect(301, 'https://youngsterentgh.pythonanywhere.com/jobs-arena/');
 });
-app.get('/services', (req, res) => {
+app.get('/list-service', (req, res) => {
+    // Deep link with query param to auto-open the "List a service" modal
+    res.redirect(301, 'https://youngsterentgh.pythonanywhere.com/jobs-arena/?action=list-service');
+});
+app.get('/find-work', (req, res) => {
     res.redirect(301, 'https://youngsterentgh.pythonanywhere.com/jobs-arena/');
+});
+app.get('/scholarships', (req, res) => {
+    res.redirect(301, 'https://youngsterentgh.pythonanywhere.com/jobs-arena/?type=scholarship');
 });
 app.get('/marketplace', (req, res) => {
     res.redirect(301, 'https://youngsterentgh.pythonanywhere.com/shop/');
@@ -7660,6 +7664,12 @@ app.get('/sell', (req, res) => {
 });
 app.get('/add-product', (req, res) => {
     res.redirect(301, 'https://youngsterentgh.pythonanywhere.com/shop/add-product/');
+});
+app.get('/plans', (req, res) => {
+    res.redirect(301, 'https://youngsterentgh.pythonanywhere.com/subscription/');
+});
+app.get('/subscribe', (req, res) => {
+    res.redirect(301, 'https://youngsterentgh.pythonanywhere.com/subscription/');
 });
 
 // ── Clean storefront route: GET /:slug/:clientType ───────────────────────────
@@ -7672,7 +7682,8 @@ app.get('/:slug/:clientType', async (req, res, next) => {
     // Skip reserved system paths
     const RESERVED = ['api', 'referral', 'Dashboard', 's', 'Admin', 'favicon.ico',
                        'health', 'webhook', 'static', 'assets', 'public',
-                       'shop', 'jobs', 'services', 'marketplace', 'sell', 'add-product'];
+                       'shop', 'jobs', 'services', 'marketplace', 'sell', 'add-product',
+                       'list-service', 'find-work', 'scholarships', 'plans', 'subscribe'];
     if (RESERVED.includes(slug) || slug.startsWith('_')) return next();
 
     return handleStorefrontSlug(slug, clientType, res, next);
@@ -7729,7 +7740,8 @@ app.get('/:slug', async (req, res, next) => {
     const slug = req.params.slug;
     const RESERVED = ['api', 'referral', 'Dashboard', 's', 'Admin', 'favicon.ico',
                        'health', 'webhook', 'static', 'assets', 'public',
-                       'shop', 'jobs', 'services', 'marketplace', 'sell', 'add-product'];
+                       'shop', 'jobs', 'services', 'marketplace', 'sell', 'add-product',
+                       'list-service', 'find-work', 'scholarships', 'plans', 'subscribe'];
     if (RESERVED.includes(slug) || slug.startsWith('_')) return next();
     return handleStorefrontSlug(slug, req.query.client || 'Customers', res, next);
 });
