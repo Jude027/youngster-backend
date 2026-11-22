@@ -7633,6 +7633,35 @@ app.delete('/api/admin/mtn-verifications/:id', auth, admin, async (req, res) => 
     }
 });
 
+// ── Clean domain redirects ─────────────────────────────────────────────────
+// These make jdyoungsterent.com/shop, /jobs, /services etc. redirect cleanly
+// to the Django site — so you advertise a professional short URL publicly.
+app.get('/shop', (req, res) => {
+    res.redirect(301, 'https://youngsterentgh.pythonanywhere.com/shop/');
+});
+app.get('/shop/*', (req, res) => {
+    const path = req.params[0] ? '/' + req.params[0] : '';
+    res.redirect(301, `https://youngsterentgh.pythonanywhere.com/shop${path}`);
+});
+app.get('/jobs', (req, res) => {
+    res.redirect(301, 'https://youngsterentgh.pythonanywhere.com/jobs-arena/');
+});
+app.get('/jobs/*', (req, res) => {
+    res.redirect(301, 'https://youngsterentgh.pythonanywhere.com/jobs-arena/');
+});
+app.get('/services', (req, res) => {
+    res.redirect(301, 'https://youngsterentgh.pythonanywhere.com/jobs-arena/');
+});
+app.get('/marketplace', (req, res) => {
+    res.redirect(301, 'https://youngsterentgh.pythonanywhere.com/shop/');
+});
+app.get('/sell', (req, res) => {
+    res.redirect(301, 'https://youngsterentgh.pythonanywhere.com/shop/add-product/');
+});
+app.get('/add-product', (req, res) => {
+    res.redirect(301, 'https://youngsterentgh.pythonanywhere.com/shop/add-product/');
+});
+
 // ── Clean storefront route: GET /:slug/:clientType ───────────────────────────
 // Cleanest possible URL: jdyoungsterent.com/youngster-data-shop/Customers
 // Must be defined AFTER all other named routes to avoid shadowing them.
@@ -7642,7 +7671,8 @@ app.get('/:slug/:clientType', async (req, res, next) => {
 
     // Skip reserved system paths
     const RESERVED = ['api', 'referral', 'Dashboard', 's', 'Admin', 'favicon.ico',
-                       'health', 'webhook', 'static', 'assets', 'public'];
+                       'health', 'webhook', 'static', 'assets', 'public',
+                       'shop', 'jobs', 'services', 'marketplace', 'sell', 'add-product'];
     if (RESERVED.includes(slug) || slug.startsWith('_')) return next();
 
     return handleStorefrontSlug(slug, clientType, res, next);
@@ -7698,7 +7728,8 @@ async function handleStorefrontSlug(slug, clientType, res, next) {
 app.get('/:slug', async (req, res, next) => {
     const slug = req.params.slug;
     const RESERVED = ['api', 'referral', 'Dashboard', 's', 'Admin', 'favicon.ico',
-                       'health', 'webhook', 'static', 'assets', 'public'];
+                       'health', 'webhook', 'static', 'assets', 'public',
+                       'shop', 'jobs', 'services', 'marketplace', 'sell', 'add-product'];
     if (RESERVED.includes(slug) || slug.startsWith('_')) return next();
     return handleStorefrontSlug(slug, req.query.client || 'Customers', res, next);
 });
@@ -7711,7 +7742,37 @@ if (require.main === module) {
     app.listen(PORT, () => {
         console.log(`Server running on port ${PORT}`);
         startOrderStatusUpdater();
+        startKeepAlive();
     });
+}
+
+// ── Keep-alive self-ping ───────────────────────────────────────────────────
+// Render free plan spins down after 15 min of inactivity causing 30-50s cold
+// starts on login. This pings the health endpoint every 10 minutes to keep
+// the server warm. Runs only in production (not locally).
+function startKeepAlive() {
+    if (process.env.NODE_ENV === 'development') return;
+    const backendUrl = process.env.BACKEND_URL || 'https://youngster-backend.onrender.com';
+    const INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
+
+    // Randomise the first ping between 1-5 min so multiple dynos don't sync
+    const firstPing = Math.floor(Math.random() * 4 * 60 * 1000) + 60 * 1000;
+
+    setTimeout(() => {
+        ping();
+        setInterval(ping, INTERVAL_MS);
+    }, firstPing);
+
+    async function ping() {
+        try {
+            const res = await fetch(`${backendUrl}/`, { method: 'GET' });
+            console.log(`[KeepAlive] Ping OK — status ${res.status}`);
+        } catch (err) {
+            console.warn('[KeepAlive] Ping failed:', err.message);
+        }
+    }
+
+    console.log(`[KeepAlive] Started — pinging every 10 minutes to prevent cold starts`);
 }
 
 module.exports = app;
