@@ -7639,14 +7639,14 @@ app.delete('/api/admin/mtn-verifications/:id', auth, admin, async (req, res) => 
 app.get('/shop', (req, res) => {
     res.redirect(301, 'https://youngsterentgh.pythonanywhere.com/shop/');
 });
-app.get('/shop/*', (req, res) => {
-    const path = req.params[0] ? '/' + req.params[0] : '';
+app.get('/shop/:path(*)', (req, res) => {
+    const path = req.params.path ? '/' + req.params.path : '';
     res.redirect(301, `https://youngsterentgh.pythonanywhere.com/shop${path}`);
 });
 app.get('/jobs', (req, res) => {
     res.redirect(301, 'https://youngsterentgh.pythonanywhere.com/jobs-arena/');
 });
-app.get('/jobs/*', (req, res) => {
+app.get('/jobs/:path(*)', (req, res) => {
     res.redirect(301, 'https://youngsterentgh.pythonanywhere.com/jobs-arena/');
 });
 app.get('/services', (req, res) => {
