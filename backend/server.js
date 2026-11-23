@@ -6846,18 +6846,24 @@ async function fetchExternalJobListings() {
         return [...xml.matchAll(/<item>([\s\S]*?)<\/item>/gi)].map(m => m[1]);
     }
 
-    // ── MyJobsGh RSS ──────────────────────────────────────────────────────────
-    try {
-        const res = await fetch('https://www.myjobsgh.com/feed/', {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'application/rss+xml, application/xml, text/xml, */*'
-            },
-            signal: AbortSignal.timeout(20000)
-        });
-        if (res.ok) {
+    // ── Ghana Jobs RSS feeds ──────────────────────────────────────────────────
+    const jobFeeds = [
+        ['https://www.jobinghana.com/feed/', 'jobinghana'],
+        ['https://www.ghanajob.com/feed/', 'ghanajob'],
+    ];
+    for (const [feedUrl, sourceKey] of jobFeeds) {
+        try {
+            const res = await fetch(feedUrl, {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept': 'application/rss+xml, application/xml, text/xml, */*'
+                },
+                signal: AbortSignal.timeout(20000)
+            });
+            if (!res.ok) { console.warn(`[JobsCron] ${sourceKey} HTTP ${res.status}`); continue; }
             const xml = await res.text();
             const items = parseItems(xml);
+            let added = 0;
             for (const item of items.slice(0, 20)) {
                 const title = stripHtml(rssField(item, 'title'));
                 const link = rssField(item, 'link') || rssField(item, 'guid');
@@ -6865,22 +6871,24 @@ async function fetchExternalJobListings() {
                 const guid = rssField(item, 'guid') || link;
                 if (title && link) {
                     listings.push({
-                        external_id: `myjobsgh_${guid.toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 80)}`,
-                        title, description: desc || 'Job opportunity. Apply via MyJobsGh.',
-                        location: 'Ghana', poster_name: 'MyJobsGh', url: link, source: 'myjobsgh', listing_type: 'job'
+                        external_id: `${sourceKey}_${guid.toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 80)}`,
+                        title, description: desc || 'Job opportunity. Click to apply.',
+                        location: 'Ghana', poster_name: sourceKey.replace(/_/g, ' '),
+                        url: link, source: sourceKey, listing_type: 'job',
+                        externalUrl: link
                     });
+                    added++;
                 }
             }
-            console.log(`[JobsCron] MyJobsGh: ${listings.length} listings parsed`);
-        } else {
-            console.warn(`[JobsCron] MyJobsGh HTTP ${res.status}`);
-        }
-    } catch (e) { console.error('[JobsCron] MyJobsGh error:', e.message); }
+            console.log(`[JobsCron] ${sourceKey}: ${added} listings parsed (${items.length} items in feed)`);
+        } catch (e) { console.error(`[JobsCron] ${sourceKey} error:`, e.message); }
+    }
 
-    // ── ScholarshipsGh + OpportunitiesForAfricans RSS ────────────────────────
+    // ── ScholarshipsGh + OpportunitiesForAfricans + OpportunityDesk RSS ───────
     const scholarshipFeeds = [
-        ['https://scholarshipsgh.com/feed/', 'scholarshipsgh'],
         ['https://opportunitiesforafricans.com/category/scholarships/ghana/feed/', 'opportunitiesforafricans'],
+        ['https://opportunitydesk.org/category/scholarships/feed/', 'opportunitydesk'],
+        ['https://www.scholars4dev.com/feed/', 'scholars4dev'],
     ];
     for (const [feedUrl, sourceKey] of scholarshipFeeds) {
         try {
@@ -6901,12 +6909,18 @@ async function fetchExternalJobListings() {
                 const desc = stripHtml(rssField(item, 'description')).slice(0, 500);
                 const guid = rssField(item, 'guid') || link;
                 if (title && link) {
+                    // Auto-detect listing type from title/description keywords
+                    const combined = (title + ' ' + desc).toLowerCase();
+                    const scholarshipKeywords = ['scholarship', 'fellowship', 'bursary', 'grant', 'study abroad', 'fully funded', 'masters', 'phd', 'undergraduate award', 'postgraduate'];
+                    const isScholarship = scholarshipKeywords.some(kw => combined.includes(kw));
+                    const listingType = isScholarship ? 'scholarship' : 'job';
                     listings.push({
                         external_id: `${sourceKey}_${guid.toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 80)}`,
-                        title, description: desc || 'Scholarship opportunity. Click to apply.',
+                        title,
+                        description: desc || (isScholarship ? 'Scholarship opportunity. Click to apply.' : 'Job opportunity. Click to apply.'),
                         location: 'Ghana / International', poster_name: sourceKey.replace(/_/g, ' '),
-                        url: link, source: sourceKey, listing_type: 'scholarship',
-                        externalUrl: link  // scholarships link directly to application page
+                        url: link, source: sourceKey, listing_type: listingType,
+                        externalUrl: link
                     });
                     added++;
                 }
