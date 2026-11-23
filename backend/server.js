@@ -6783,15 +6783,29 @@ app.get('/api/cron/import-jobs', async (req, res) => {
         return res.status(401).json({ error: 'Unauthorized' });
     }
     try {
+        // Fetch from external sources here on Render (PythonAnywhere blocks outbound requests)
+        const listings = await fetchExternalJobListings();
+        console.log(`[JobsCron] Fetched ${listings.length} listings from external sources`);
+
+        if (listings.length === 0) {
+            return res.json({ success: true, status: 200, result: { success: true, imported: 0, skipped: 0, errors: [], message: 'No listings fetched from external sources.' } });
+        }
+
+        // Push listings to Django to save into the database
         const djangoBase = 'https://youngsterentgh.pythonanywhere.com';
         const sellerSecret = process.env.SELLER_SYNC_SECRET || '';
-        const url = `${djangoBase}/jobs-arena/auto-import/?secret=${encodeURIComponent(sellerSecret)}`;
+        const url = `${djangoBase}/jobs-arena/push-import/?secret=${encodeURIComponent(sellerSecret)}`;
 
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s — scraping takes time
+        const timeoutId = setTimeout(() => controller.abort(), 30000);
         let response;
         try {
-            response = await fetch(url, { signal: controller.signal });
+            response = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ listings }),
+                signal: controller.signal
+            });
         } finally {
             clearTimeout(timeoutId);
         }
@@ -6801,20 +6815,79 @@ app.get('/api/cron/import-jobs', async (req, res) => {
         try { data = JSON.parse(text); } catch (_) { data = { raw: text }; }
 
         console.log('[JobsCron] Import result:', data);
-        return res.json({
-            success: response.ok,
-            status: response.status,
-            result: data
-        });
+        return res.json({ success: response.ok, status: response.status, result: data });
     } catch (err) {
         const timedOut = err?.name === 'AbortError';
         console.error('[JobsCron] Import failed:', err.message);
-        return res.status(503).json({
-            success: false,
-            error: timedOut ? 'Django import request timed out' : err.message
-        });
+        return res.status(503).json({ success: false, error: timedOut ? 'Django push timed out' : err.message });
     }
 });
+
+// ── External job fetch helpers (run on Render, not PythonAnywhere) ────────────
+function stripHtml(html) {
+    return String(html || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+async function fetchExternalJobListings() {
+    const listings = [];
+
+    // ── MyJobsGh RSS ─────────────────���────────────────────────────────────────
+    try {
+        const res = await fetch('https://www.myjobsgh.com/feed/', {
+            headers: { 'User-Agent': 'Mozilla/5.0 (compatible; YoungsterJobBot/1.0)' },
+            signal: AbortSignal.timeout(15000)
+        });
+        const xml = await res.text();
+        const items = [...xml.matchAll(/<item>([\s\S]*?)<\/item>/g)];
+        for (const [, item] of items.slice(0, 20)) {
+            const title = stripHtml(item.match(/<title><!\[CDATA\[(.*?)\]\]><\/title>/)?.[1] || '');
+            const link = (item.match(/<link>(.*?)<\/link>/)?.[1] || '').trim();
+            const desc = stripHtml(item.match(/<description><!\[CDATA\[([\s\S]*?)\]\]><\/description>/)?.[1] || '').slice(0, 500);
+            const guid = (item.match(/<guid[^>]*>(.*?)<\/guid>/)?.[1] || link).trim();
+            if (title && link) {
+                listings.push({
+                    external_id: `myjobsgh_${guid.toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 80)}`,
+                    title, description: desc || 'Job opportunity. Apply via MyJobsGh.',
+                    location: 'Ghana', poster_name: 'MyJobsGh', url: link, source: 'myjobsgh', listing_type: 'job'
+                });
+            }
+        }
+        console.log(`[JobsCron] MyJobsGh: ${listings.length} listings`);
+    } catch (e) { console.error('[JobsCron] MyJobsGh error:', e.message); }
+
+    // ── ScholarshipsGh RSS ────────────────────────────────────────────────────
+    const scholarshipFeeds = [
+        ['https://scholarshipsgh.com/feed/', 'scholarshipsgh'],
+        ['https://opportunitiesforafricans.com/category/scholarships/ghana/feed/', 'opportunitiesforafricans'],
+    ];
+    for (const [feedUrl, sourceKey] of scholarshipFeeds) {
+        try {
+            const res = await fetch(feedUrl, {
+                headers: { 'User-Agent': 'Mozilla/5.0 (compatible; YoungsterJobBot/1.0)' },
+                signal: AbortSignal.timeout(15000)
+            });
+            const xml = await res.text();
+            const items = [...xml.matchAll(/<item>([\s\S]*?)<\/item>/g)];
+            for (const [, item] of items.slice(0, 10)) {
+                const title = stripHtml(item.match(/<title><!\[CDATA\[(.*?)\]\]><\/title>/)?.[1] || '');
+                const link = (item.match(/<link>(.*?)<\/link>/)?.[1] || '').trim();
+                const desc = stripHtml(item.match(/<description><!\[CDATA\[([\s\S]*?)\]\]><\/description>/)?.[1] || '').slice(0, 500);
+                const guid = (item.match(/<guid[^>]*>(.*?)<\/guid>/)?.[1] || link).trim();
+                if (title && link) {
+                    listings.push({
+                        external_id: `${sourceKey}_${guid.toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 80)}`,
+                        title, description: desc || 'Scholarship opportunity. Click to apply.',
+                        location: 'Ghana / International', poster_name: sourceKey.replace(/_/g, ' '),
+                        url: link, source: sourceKey, listing_type: 'scholarship'
+                    });
+                }
+            }
+            console.log(`[JobsCron] ${sourceKey}: fetched ok`);
+        } catch (e) { console.error(`[JobsCron] ${sourceKey} error:`, e.message); }
+    }
+
+    return listings;
+}
 
 // reconciler; it also ensures ordinary Order/Transaction records exist for
 // inconclusive attempts. It never marks an inconclusive payment as failed.
