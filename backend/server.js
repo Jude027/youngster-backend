@@ -6831,31 +6831,53 @@ function stripHtml(html) {
 async function fetchExternalJobListings() {
     const listings = [];
 
-    // ── MyJobsGh RSS ─────────────────���────────────────────────────────────────
+    // Helper: extract RSS field supporting both CDATA and plain text
+    function rssField(item, tag) {
+        // Try CDATA first
+        const cdata = item.match(new RegExp(`<${tag}[^>]*><!\\[CDATA\\[([\\s\\S]*?)\\]\\]></${tag}>`, 'i'));
+        if (cdata) return cdata[1].trim();
+        // Try plain text (strip inner tags)
+        const plain = item.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)</${tag}>`, 'i'));
+        if (plain) return plain[1].replace(/<[^>]+>/g, '').trim();
+        return '';
+    }
+
+    function parseItems(xml) {
+        return [...xml.matchAll(/<item>([\s\S]*?)<\/item>/gi)].map(m => m[1]);
+    }
+
+    // ── MyJobsGh RSS ──────────────────────────────────────────────────────────
     try {
         const res = await fetch('https://www.myjobsgh.com/feed/', {
-            headers: { 'User-Agent': 'Mozilla/5.0 (compatible; YoungsterJobBot/1.0)' },
-            signal: AbortSignal.timeout(15000)
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'application/rss+xml, application/xml, text/xml, */*'
+            },
+            signal: AbortSignal.timeout(20000)
         });
-        const xml = await res.text();
-        const items = [...xml.matchAll(/<item>([\s\S]*?)<\/item>/g)];
-        for (const [, item] of items.slice(0, 20)) {
-            const title = stripHtml(item.match(/<title><!\[CDATA\[(.*?)\]\]><\/title>/)?.[1] || '');
-            const link = (item.match(/<link>(.*?)<\/link>/)?.[1] || '').trim();
-            const desc = stripHtml(item.match(/<description><!\[CDATA\[([\s\S]*?)\]\]><\/description>/)?.[1] || '').slice(0, 500);
-            const guid = (item.match(/<guid[^>]*>(.*?)<\/guid>/)?.[1] || link).trim();
-            if (title && link) {
-                listings.push({
-                    external_id: `myjobsgh_${guid.toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 80)}`,
-                    title, description: desc || 'Job opportunity. Apply via MyJobsGh.',
-                    location: 'Ghana', poster_name: 'MyJobsGh', url: link, source: 'myjobsgh', listing_type: 'job'
-                });
+        if (res.ok) {
+            const xml = await res.text();
+            const items = parseItems(xml);
+            for (const item of items.slice(0, 20)) {
+                const title = stripHtml(rssField(item, 'title'));
+                const link = rssField(item, 'link') || rssField(item, 'guid');
+                const desc = stripHtml(rssField(item, 'description')).slice(0, 500);
+                const guid = rssField(item, 'guid') || link;
+                if (title && link) {
+                    listings.push({
+                        external_id: `myjobsgh_${guid.toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 80)}`,
+                        title, description: desc || 'Job opportunity. Apply via MyJobsGh.',
+                        location: 'Ghana', poster_name: 'MyJobsGh', url: link, source: 'myjobsgh', listing_type: 'job'
+                    });
+                }
             }
+            console.log(`[JobsCron] MyJobsGh: ${listings.length} listings parsed`);
+        } else {
+            console.warn(`[JobsCron] MyJobsGh HTTP ${res.status}`);
         }
-        console.log(`[JobsCron] MyJobsGh: ${listings.length} listings`);
     } catch (e) { console.error('[JobsCron] MyJobsGh error:', e.message); }
 
-    // ── ScholarshipsGh RSS ────────────────────────────────────────────────────
+    // ── ScholarshipsGh + OpportunitiesForAfricans RSS ────────────────────────
     const scholarshipFeeds = [
         ['https://scholarshipsgh.com/feed/', 'scholarshipsgh'],
         ['https://opportunitiesforafricans.com/category/scholarships/ghana/feed/', 'opportunitiesforafricans'],
@@ -6863,26 +6885,33 @@ async function fetchExternalJobListings() {
     for (const [feedUrl, sourceKey] of scholarshipFeeds) {
         try {
             const res = await fetch(feedUrl, {
-                headers: { 'User-Agent': 'Mozilla/5.0 (compatible; YoungsterJobBot/1.0)' },
-                signal: AbortSignal.timeout(15000)
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept': 'application/rss+xml, application/xml, text/xml, */*'
+                },
+                signal: AbortSignal.timeout(20000)
             });
+            if (!res.ok) { console.warn(`[JobsCron] ${sourceKey} HTTP ${res.status}`); continue; }
             const xml = await res.text();
-            const items = [...xml.matchAll(/<item>([\s\S]*?)<\/item>/g)];
-            for (const [, item] of items.slice(0, 10)) {
-                const title = stripHtml(item.match(/<title><!\[CDATA\[(.*?)\]\]><\/title>/)?.[1] || '');
-                const link = (item.match(/<link>(.*?)<\/link>/)?.[1] || '').trim();
-                const desc = stripHtml(item.match(/<description><!\[CDATA\[([\s\S]*?)\]\]><\/description>/)?.[1] || '').slice(0, 500);
-                const guid = (item.match(/<guid[^>]*>(.*?)<\/guid>/)?.[1] || link).trim();
+            const items = parseItems(xml);
+            let added = 0;
+            for (const item of items.slice(0, 15)) {
+                const title = stripHtml(rssField(item, 'title'));
+                const link = rssField(item, 'link') || rssField(item, 'guid');
+                const desc = stripHtml(rssField(item, 'description')).slice(0, 500);
+                const guid = rssField(item, 'guid') || link;
                 if (title && link) {
                     listings.push({
                         external_id: `${sourceKey}_${guid.toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 80)}`,
                         title, description: desc || 'Scholarship opportunity. Click to apply.',
                         location: 'Ghana / International', poster_name: sourceKey.replace(/_/g, ' '),
-                        url: link, source: sourceKey, listing_type: 'scholarship'
+                        url: link, source: sourceKey, listing_type: 'scholarship',
+                        externalUrl: link  // scholarships link directly to application page
                     });
+                    added++;
                 }
             }
-            console.log(`[JobsCron] ${sourceKey}: fetched ok`);
+            console.log(`[JobsCron] ${sourceKey}: ${added} listings parsed (${items.length} items in feed)`);
         } catch (e) { console.error(`[JobsCron] ${sourceKey} error:`, e.message); }
     }
 
