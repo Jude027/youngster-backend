@@ -6848,8 +6848,10 @@ async function fetchExternalJobListings() {
 
     // ── Ghana Jobs RSS feeds ──────────────────────────────────────────────────
     const jobFeeds = [
-        ['https://www.jobinghana.com/feed/', 'jobinghana'],
-        ['https://www.ghanajob.com/feed/', 'ghanajob'],
+        ['https://www.brighter-monday.com/jobs/country/ghana.rss', 'brightermonday'],
+        ['https://www.developmentaid.org/api/frontend/api/vacancies/rss?country=Ghana', 'developmentaid'],
+        ['https://jobwebghana.com/feed/', 'jobwebghana'],
+        ['https://www.ghanacurrentjobs.com/feed/', 'ghanacurrentjobs'],
     ];
     for (const [feedUrl, sourceKey] of jobFeeds) {
         try {
@@ -6884,11 +6886,13 @@ async function fetchExternalJobListings() {
         } catch (e) { console.error(`[JobsCron] ${sourceKey} error:`, e.message); }
     }
 
-    // ── ScholarshipsGh + OpportunitiesForAfricans + OpportunityDesk RSS ───────
+    // ── Scholarship RSS feeds ─────────────────────────────────────────────────
     const scholarshipFeeds = [
         ['https://opportunitiesforafricans.com/category/scholarships/ghana/feed/', 'opportunitiesforafricans'],
-        ['https://opportunitydesk.org/category/scholarships/feed/', 'opportunitydesk'],
+        ['https://opportunitydesk.org/feed/', 'opportunitydesk'],
         ['https://www.scholars4dev.com/feed/', 'scholars4dev'],
+        ['https://www.scholarshipregion.com/feed/', 'scholarshipregion'],
+        ['https://www.afterschoolafrica.com/feed/', 'afterschoolafrica'],
     ];
     for (const [feedUrl, sourceKey] of scholarshipFeeds) {
         try {
